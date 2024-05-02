@@ -28,5 +28,5 @@ qemu-run: build
 
 .PHONY: clean
 clean:
-	rm extracted.jpg ascii.txt bin/bad_apple.mp4 .qemu
+	rm -rf extracted.jpg ascii.txt bin/bad_apple.mp4 .qemu
 	cargo clean
