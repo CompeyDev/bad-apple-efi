@@ -5,4 +5,3 @@ edition = "2021"
 
 [dependencies]
 uefi = { version = "0.28.0", features = ["qemu", "global_allocator"] }
-log = "0.4.21"
