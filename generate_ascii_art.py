@@ -11,15 +11,15 @@ Authors:
 
 from PIL import Image
 
-video_length = 100
+video_length = 219
 
-ASCII_CHARS = '$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\|()1{}[]?-_+~<>i!lI;:,"^`\'. '
+ASCII_CHARS = '$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,"^`\'. '
 
-def scale_image(image, new_width=100, new_height=30):
+def scale_image(image, new_width=300, new_height=240):
     """Resizes an image preserving the aspect ratio.
     """
     (original_width, original_height) = image.size
-    aspect_ratio = original_height/float(original_width)
+    aspect_ratio = original_height / float(original_width)
     if new_height == 0:
         new_height = int(aspect_ratio * new_width)
 
@@ -37,12 +37,12 @@ def map_pixels_to_ascii_chars(image, range_width=3.69):
     """
 
     pixels_in_image = list(image.getdata())
-    pixels_to_chars = [ASCII_CHARS[int(pixel_value/range_width)] for pixel_value in
+    pixels_to_chars = [ASCII_CHARS[int(pixel_value / range_width)] for pixel_value in
             pixels_in_image]
 
     return "".join(pixels_to_chars)
 
-def convert_image_to_ascii(image, new_width=300, new_height=90):
+def convert_image_to_ascii(image, new_width=300, new_height=240):
     image = scale_image(image, new_width, new_height)
     image = convert_to_grayscale(image)
 
@@ -59,24 +59,47 @@ def handle_image_conversion(image_filepath):
 
     return convert_image_to_ascii(image)
 
-if __name__=='__main__':
+if __name__ == '__main__':
     import os
     import time 
     import cv2
 
     vidcap = cv2.VideoCapture('bin/bad_apple.mp4')
     time_count = 0
+
+    os.remove('ascii.txt')
     f = open('ascii.txt', 'a')
 
-    while time_count <= video_length * 1000:
-        print('Generating ASCII frame at ' + str(time_count))
+    print("Generating ASCII frames")
+    lim = video_length * 1000
+    frames = []
+    while time_count <= lim:
+
+        progress = "[{}/{}]".format(str(time_count), lim)
+        print('\033[A\033[2Kextracting ' + progress)
         vidcap.set(0, time_count)
         success, image = vidcap.read()
         if success:
             cv2.imwrite('extracted.jpg', image)
+        
+        print('\033[A\033[2Kconverting ' + progress)
+        converted = handle_image_conversion('extracted.jpg')
+        
+        print('\033[A\033[2Kwriting ' + progress)
 
-        f.write(handle_image_conversion('extracted.jpg'))
-        f.write('SPLIT')
+        # If it's the first iteration, we just append to file,
+        # else, we append to buffer for future writes
+        if time_count == 0:
+            f.write(converted)
+            f.write('SPLIT')
+        else:
+            frames.append(converted)
+        
+
+        # We only write every 10K frames so that the disk doesn't die
+        if time_count % 10000 == 0:
+            f.write('SPLIT'.join(frames))
+            frames = []
 
         time_count = time_count + 100
 

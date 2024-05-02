@@ -19,7 +19,7 @@ qemu-run: build
 	qemu-system-x86_64 -nodefaults -bios /usr/share/ovmf/x64/OVMF.fd \
 		-vga std \
 		-machine q35,accel=kvm:tcg \
-		-m 128M\
+		-m 512M \
 		-drive format=raw,file=fat:rw:.qemu \
 		-serial stdio \
 		-display gtk \
@@ -27,5 +27,5 @@ qemu-run: build
 
 .PHONY: clean
 clean:
-	rm extracted.jpg ascii.txt bin/bad_apple.mp4
+	rm extracted.jpg ascii.txt bin/bad_apple.mp4 .qemu
 	cargo clean
