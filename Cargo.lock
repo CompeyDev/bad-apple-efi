@@ -3,6 +3,13 @@
 version = 3
 
 [[package]]
+name = "bad-apple"
+version = "0.1.0"
+dependencies = [
+ "uefi",
+]
+
+[[package]]
 name = "bit_field"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19,13 +26,6 @@ name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
-
-[[package]]
-name = "kernelz"
-version = "0.1.0"
-dependencies = [
- "uefi",
-]
 
 [[package]]
 name = "log"

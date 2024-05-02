@@ -16,7 +16,8 @@ build:
 qemu-run: build
 	mkdir -p .qemu/efi/boot
 	cp target/x86_64-unknown-uefi/release/kernelz.efi .qemu/efi/boot/bootx64.efi
-	qemu-system-x86_64 -nodefaults -bios /usr/share/ovmf/x64/OVMF.fd \
+	cp /usr/share/ovmf/x64/OVMF.fd .
+	qemu-system-x86_64 -nodefaults -bios OVMF.fd \
 		-vga std \
 		-machine q35,accel=kvm:tcg \
 		-m 512M \
