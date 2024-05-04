@@ -6,7 +6,7 @@ The [bad apple video](https://www.youtube.com/watch?v=FtutLA63Cp8&pp=ygUJYmFkIGF
 > The EFI application does not actually include the audio, it has merely been `ffmpeg`'d into the demo video.
 > Audio support would involve a complete refactor and removal of all reliance on [GOP](https://wiki.osdev.org/GOP),
 > and instead move towards writing directly to the frame buffer, so that [PC Speaker](https://wiki.osdev.org/PC_Speaker) can be used,
-> which requires an exit of boot services.
+> which requires an exit of boot services. [Pull requests](https://github.com/CompeyDev/bad-apple-efi/pulls) are welcome!
 
 <details>
   <summary>Preview</summary>
