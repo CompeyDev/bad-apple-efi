@@ -67,7 +67,7 @@ if __name__ == '__main__':
     vidcap = cv2.VideoCapture('bin/bad_apple.mp4')
     time_count = 0
 
-    os.remove('ascii.txt')
+    # os.remove('ascii.txt')
     f = open('ascii.txt', 'a')
 
     print("Generating ASCII frames")
@@ -81,6 +81,8 @@ if __name__ == '__main__':
         success, image = vidcap.read()
         if success:
             cv2.imwrite('extracted.jpg', image)
+        else:
+            raise Exception("Failed to read frame")
         
         print('\033[A\033[2Kconverting ' + progress)
         converted = handle_image_conversion('extracted.jpg')
