@@ -16,7 +16,6 @@ impl TimeExt for runtime::Time {
         runtime::get_time()
     }
 
-    /// Convert the [Time] to milliseconds (ms)
     fn as_timestamp(&self) -> u32 {
         let mut total_time_ms: u32 = 0;
 

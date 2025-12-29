@@ -9,7 +9,6 @@ default: build
 
 .PHONY: build
 build:
-	[ ! -f ascii.txt ] && ./generate_ascii_art.py || exit 0
 	cargo build --release --target x86_64-unknown-uefi
 
 .PHONY: qemu-run
@@ -27,5 +26,5 @@ qemu-run: build
 
 .PHONY: clean
 clean:
-	rm -rf extracted.jpg ascii.txt bin/bad_apple.mp4 .qemu
+	rm -rf bin/bad_apple.mp4 .qemu
 	cargo clean

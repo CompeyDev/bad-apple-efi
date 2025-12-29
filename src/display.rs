@@ -1,8 +1,7 @@
 use thiserror::Error;
 use uefi::{boot, println, proto::console::gop::GraphicsOutput};
 
-const WIDTH: usize = 300;
-const HEIGHT: usize = 240;
+use crate::pixel::Color;
 
 /// An abstraction around the low-level framebuffer for drawing graphics. Typically
 /// constructed by calling [`Display::open`] when boot services is available.
@@ -26,6 +25,12 @@ pub enum DisplayError {
         y: usize,
         reason: &'static str,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Frame {
+    width: usize,
+    height: usize,
 }
 
 impl<'a> Display<'a> {
@@ -87,9 +92,13 @@ impl<'a> Display<'a> {
     ///
     /// ## Errors
     /// - If any (x, y) coordinate is out of bounds, this will return a `DrawError`.
-    pub fn draw<I: Iterator<Item = (usize, usize, Color)>>(&mut self, content: I) -> Result<()> {
+    pub fn draw<I: Iterator<Item = (usize, usize, Color)>>(
+        &mut self,
+        content: I,
+        frame: Frame,
+    ) -> Result<()> {
         for (x, y, pixel) in content {
-            if x >= WIDTH || y >= HEIGHT {
+            if x >= frame.width || y >= frame.height {
                 println!("Attempted to draw out of bounds at x={}, y={}", x, y);
                 return Err(DisplayError::DrawError {
                     x,
@@ -98,8 +107,8 @@ impl<'a> Display<'a> {
                 });
             }
 
-            let y_centered_offset = (self.height - HEIGHT) / 2;
-            let x_centered_offset = (self.width - WIDTH) / 2;
+            let y_centered_offset = (self.height - frame.height) / 2;
+            let x_centered_offset = (self.width - frame.width) / 2;
             let offset = ((y_centered_offset + y) * self.width) + (x_centered_offset + x);
 
             let color = if let Color::Rgb(r, g, b) = pixel {
@@ -122,37 +131,11 @@ impl<'a> Display<'a> {
             *pixel = Color::default().into();
         }
     }
-}
 
-/// Represents a color for drawing on the display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(unused)]
-pub enum Color {
-    #[default]
-    Gray,
-    White,
-    Red,
-    Green,
-    Blue,
-    Yellow,
-    Cyan,
-    Magenta,
-    Rgb(u8, u8, u8),
-}
-
-#[allow(clippy::from_over_into)]
-impl Into<u32> for Color {
-    fn into(self) -> u32 {
-        match self {
-            Color::Gray => 0x222222,
-            Color::White => 0xFFFFFF,
-            Color::Red => 0xFF0000,
-            Color::Green => 0x00FF00,
-            Color::Blue => 0x0000FF,
-            Color::Yellow => 0xFFFF00,
-            Color::Cyan => 0x00FFFF,
-            Color::Magenta => 0xFF00FF,
-            Color::Rgb(r, g, b) => ((r as u32) << 16) | ((g as u32) << 8) | (b as u32),
+    pub fn as_frame(&self) -> Frame {
+        Frame {
+            width: self.width,
+            height: self.height,
         }
     }
 }

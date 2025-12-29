@@ -1,6 +1,3 @@
 /target
 .qemu/
 bin/*.mp4
-ascii.txt
-extracted.jpg
-OVMF.fd

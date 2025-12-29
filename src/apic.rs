@@ -59,6 +59,9 @@ impl ApicTimer {
         let apic_icr = (Self::LAPIC_BASE + Self::LAPIC_ICR) as *mut u32;
         let apic_ccr = (Self::LAPIC_BASE + Self::LAPIC_CCR) as *mut u32;
 
+        // Emit the initial divisor into the register before measuring
+        let _ = Self::init(0, divisor);
+
         let actual_frequency = unsafe {
             // Oneshot mode, masked interrupt, max initial count
             apic_lvt_timer.write_volatile(Self::LVT_MASKED);
@@ -71,9 +74,7 @@ impl ApicTimer {
             let current_count = apic_ccr.read_volatile();
             let ticks_in_10ms = 0xFFFFFFFF - current_count;
 
-            // Calculate actual frequency
-            let effective_frequency = (ticks_in_10ms as u64 * 100) as u32;
-            effective_frequency * divisor
+            (ticks_in_10ms as u64 * 100 * divisor as u64) as u32
         };
 
         Self::init(actual_frequency, divisor)
