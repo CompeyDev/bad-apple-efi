@@ -9,15 +9,13 @@ default: build
 
 .PHONY: build
 build:
-	[ ! -f ascii.txt ] && ./generate_ascii_art.py || exit 0
 	cargo build --release --target x86_64-unknown-uefi
 
 .PHONY: qemu-run
 qemu-run: build
 	mkdir -p .qemu/efi/boot
-	cp target/x86_64-unknown-uefi/release/kernelz.efi .qemu/efi/boot/bootx64.efi
-	cp /usr/share/ovmf/x64/OVMF.fd .
-	qemu-system-x86_64 -nodefaults -bios OVMF.fd \
+	cp target/x86_64-unknown-uefi/release/bad-apple.efi .qemu/efi/boot/bootx64.efi
+	qemu-system-x86_64 -nodefaults -bios /usr/share/ovmf/x64/OVMF.4m.fd \
 		-vga std \
 		-machine q35,accel=kvm:tcg \
 		-m 512M \
@@ -28,5 +26,5 @@ qemu-run: build
 
 .PHONY: clean
 clean:
-	rm -rf extracted.jpg ascii.txt bin/bad_apple.mp4 .qemu
+	rm -rf bin/bad_apple.mp4 .qemu
 	cargo clean

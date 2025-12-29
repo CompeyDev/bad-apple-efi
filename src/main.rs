@@ -2,86 +2,133 @@
 #![no_std]
 
 extern crate alloc;
-use alloc::vec;
-use alloc::vec::Vec;
+use core::fmt::Write;
 
-use uefi::{
-    entry, println,
-    proto::console::gop::{BltOp, BltPixel, BltRegion, GraphicsOutput},
-    table::{Boot, SystemTable},
-    Handle, Status,
-};
+use uefi::runtime::Time;
+use zune_png::zune_core::colorspace::ColorSpace;
+use zune_png::zune_core::options::DecoderOptions;
+use zune_png::PngDecoder;
 
-include!(concat!(env!("OUT_DIR"), "/ascii.rs"));
+use crate::apic::ApicTimer;
+use crate::archive::ArchiveReader;
+use crate::display::Display;
+use crate::memory::UefiAllocatorManager;
+use crate::pixel::*;
+use crate::serial::Serial;
+use crate::time::TimeExt;
 
-const WIDTH: usize = 300;
-const HEIGHT: usize = 240;
+mod apic;
+mod archive;
+mod display;
+mod memory;
+mod pixel;
+mod serial;
+mod time;
 
-#[allow(unreachable_code)]
-#[entry]
-fn main(_image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
-    uefi::helpers::init(&mut system_table).unwrap();
-    let stdout = system_table.stdout();
-    stdout.clear().expect("failed to clear stdout");
+const FRAMES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/video_frames.arc"));
+const TARGET_FRAMERATE_MS: u32 = 33; // ~30 FPS
 
-    let boot_services = system_table.boot_services();
+// TODO: Proper error handling and reporting to display
 
-    let gop_handle = boot_services
-        .get_handle_for_protocol::<GraphicsOutput>()
-        .expect("failed to get GOP handle");
-    let mut gop = boot_services
-        .open_protocol_exclusive::<GraphicsOutput>(gop_handle)
-        .expect("failed to open GOP");
+#[uefi::entry]
+fn main() -> uefi::Status {
+    uefi::helpers::init().unwrap();
 
-    let mut modes = gop.modes(boot_services).collect::<Vec<_>>();
-    modes.sort_by_key(|x| x.info().resolution());
-    let smallest_mode = modes.first().unwrap();
-    gop.set_mode(smallest_mode).expect("failed to set GOP mode");
+    // Initialize frame reader, display, memory, and APIC timer
+    let mut reader = ArchiveReader::new(FRAMES);
+    let mut display = Display::open().expect("Failed to open display");
+    let viewmodel = display.as_frame();
+    let _mem_region = unsafe { UefiAllocatorManager::init() };
+    let timer = ApicTimer::calibrate(16);
 
-    let (width, height) = gop.current_mode_info().resolution();
+    display.clear();
 
-    println!("scaled resolution to {width}x{height}");
+    while let Some((_, data)) = reader.next_file() {
+        let start = Time::now().unwrap().as_timestamp();
 
-    let mut default_pixel = BltPixel::new(34, 34, 34);
-    for frame in ASCII_FRAMES.iter().take(2180) {
-        let mut pixbuf = vec![default_pixel; WIDTH * HEIGHT];
-        let frame_matrix = frame
-            .split('\n')
-            .map(|str| str.as_bytes())
-            .collect::<Vec<_>>();
+        // TODO: Downscale if exceeding size
+        let mut decoder = PngDecoder::new_with_options(
+            data,
+            DecoderOptions::default()
+                .png_set_strip_to_8bit(true)
+                .set_max_width(display.width)
+                .set_max_height(display.height),
+        );
 
-        for (y, x_pixels) in frame_matrix.iter().enumerate() {
-            for (x, x_pixel) in (*x_pixels).iter().enumerate() {
-                // NOTE: Just provide a placebo pixel so that we don't panic
-                // NOTE: `y * WIDTH + x` is just normalizing the matrix indices into a 1D array index
-                let real_pixel = pixbuf.get_mut(y * WIDTH + x).unwrap_or(&mut default_pixel);
+        let pixels = decoder.decode().unwrap().u8().unwrap();
+        let colorspace = decoder.get_colorspace().unwrap();
+        let info = decoder.get_info().unwrap();
+        let bytes_per_pixel = match colorspace {
+            ColorSpace::RGB => RGB_CHANNELS_SIZE,
+            ColorSpace::RGBA => RGBA_CHANNELS_SIZE,
+            ColorSpace::Luma => LUMA_CHANNELS_SIZE,
+            _ => continue,
+        };
 
-                // TODO: Handle all the different ASCII chars with different colors
-                if *x_pixel == b'$' {
-                    // Background, white
-                    real_pixel.red = 255;
-                    real_pixel.blue = 255;
-                    real_pixel.green = 255;
-                } else {
-                    // Foreground, lighter shade of black
-                    real_pixel.red = 34;
-                    real_pixel.green = 34;
-                    real_pixel.blue = 34;
+        let scaled_width = display.width;
+        let scaled_height = display.height;
+        let scaled = scale_nn_fast(
+            &pixels,
+            info.width,
+            info.height,
+            scaled_width,
+            scaled_height,
+            bytes_per_pixel,
+        );
+
+        let content = (0..scaled_height).flat_map(|y| {
+            (0..scaled_width).map({
+                let pixels_inner = &scaled;
+                move |x| {
+                    let idx = (y * scaled_width + x) * bytes_per_pixel;
+                    let pixel = match colorspace {
+                        ColorSpace::RGB | ColorSpace::RGBA => Color::Rgb(
+                            pixels_inner[idx],
+                            pixels_inner[idx + 1],
+                            pixels_inner[idx + 2],
+                        ),
+                        ColorSpace::Luma | ColorSpace::LumaA => {
+                            let gray = pixels_inner[idx];
+                            Color::Rgb(gray, gray, gray)
+                        }
+                        _ => Color::default(),
+                    };
+
+                    // No need to two tone map for a "retro" feeling on high res mode
+                    #[cfg(not(feature = "high_res"))]
+                    let pixel = pixel.to_two_tone(Color::Gray, Color::WHITE, 160);
+                    (x, y, pixel)
                 }
-            }
-        }
+            })
+        });
 
-        gop.blt(BltOp::BufferToVideo {
-            buffer: &pixbuf,
-            src: BltRegion::Full,
-            dest: ((width - WIDTH) / 2, (height - HEIGHT) / 2),
-            dims: (WIDTH, HEIGHT),
-        })
-        .expect("failed to transfer blocks");
+        let _ = display.draw(content, viewmodel);
 
-        system_table.boot_services().stall(93709);
+        let end = Time::now().unwrap().as_timestamp();
+        let remaining_time = TARGET_FRAMERATE_MS.saturating_sub(end - start);
+        timer.delay(remaining_time);
     }
 
-    boot_services.stall(1_000_000);
-    Status::SUCCESS
+    if cfg!(debug_assertions) {
+        // Hang indefinitely in debug mode
+        loop {
+            core::hint::spin_loop()
+        }
+    } else {
+        uefi::Status::SUCCESS
+    }
+}
+
+#[cfg(not(feature = "qemu"))]
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    writeln!(Serial, "panic: {}", info.message()).unwrap();
+
+    if let Some(location) = info.location() {
+        writeln!(Serial, "panic: file '{}' at line {}", location.file(), location.line()).unwrap();
+    }
+
+    loop {
+        core::hint::spin_loop();
+    }
 }
