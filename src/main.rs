@@ -2,6 +2,8 @@
 #![no_std]
 
 extern crate alloc;
+use core::fmt::Write;
+
 use uefi::runtime::Time;
 use zune_png::zune_core::colorspace::ColorSpace;
 use zune_png::zune_core::options::DecoderOptions;
