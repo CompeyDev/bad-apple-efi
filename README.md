@@ -1,6 +1,6 @@
 # bad-apple-efi
 
-The [bad apple video](https://www.youtube.com/watch?v=FtutLA63Cp8&pp=ygUJYmFkIGFwcGxl) but bootable, powered by 🦀
+The [bad apple video](https://youtu.be/FtutLA63Cp8) but bootable, powered by 🦀
 
 > [!NOTE]  
 > The EFI application does not actually include the audio, it has merely been `ffmpeg`'d into the demo video.
@@ -24,10 +24,10 @@ other distributions.
 
 ```sh
 # Install prerequisites
-sudo pacman -S qemu-base qemu-ui-gtk ovmf python3 python-pillow python-opencv
+sudo pacman -S qemu-base qemu-ui-gtk ovmf
 
 # Clone the repository
-git clone https://git.devcomp.xyz/DevComp/bad-apple-efi.git
+git clone https://github.com/CompeyDev/bad-apple-efi.git
 
 # Generate ASCII frames & compile EFI
 make build

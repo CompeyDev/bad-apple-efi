@@ -2,7 +2,6 @@
 #~~~~~~~~~~~~~~
 
 # Emulation: pacman -S qemu-base qemu-ui-gtk ovmf 
-# Python: pacman -S python-pillow python-opencv
 
 .PHONY: default
 default: build
