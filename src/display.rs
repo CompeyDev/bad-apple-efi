@@ -1,6 +1,6 @@
 use thiserror::Error;
+use uefi::boot;
 use uefi::proto::console::gop::GraphicsOutput;
-use uefi::{boot, println};
 
 use crate::pixel::Color;
 
@@ -91,7 +91,6 @@ impl<'a> Display<'a> {
     ) -> Result<()> {
         for (x, y, pixel) in content {
             if x >= frame.width || y >= frame.height {
-                println!("Attempted to draw out of bounds at x={}, y={}", x, y);
                 return Err(DisplayError::DrawError { x, y, reason: "Out of bounds" });
             }
 
@@ -115,8 +114,12 @@ impl<'a> Display<'a> {
     }
 
     pub fn clear(&mut self) {
+        self.fill(Color::default());
+    }
+
+    pub fn fill(&mut self, color: Color) {
         for pixel in self.framebuffer.iter_mut() {
-            *pixel = Color::default().into();
+            *pixel = color.into();
         }
     }
 
