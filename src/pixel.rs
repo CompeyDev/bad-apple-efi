@@ -2,7 +2,8 @@
 #![allow(clippy::from_over_into)]
 
 use alloc::vec;
-use resize::{formats, px::PixelFormat, Resizer, Type};
+use resize::px::PixelFormat;
+use resize::{formats, Resizer, Type};
 
 /// Represents a color for drawing on the display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -33,11 +34,7 @@ impl Color {
     pub fn to_bw(self, threshold: Option<u8>) -> Color {
         const DEFAULT_THRESHOLD: u8 = 128;
 
-        self.to_two_tone(
-            Color::WHITE,
-            Color::BLACK,
-            threshold.unwrap_or(DEFAULT_THRESHOLD),
-        )
+        self.to_two_tone(Color::WHITE, Color::BLACK, threshold.unwrap_or(DEFAULT_THRESHOLD))
     }
 
     /// Apply a two tone posterization, i.e., map values threshold into either an upper or

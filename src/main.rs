@@ -2,10 +2,17 @@
 #![no_std]
 
 extern crate alloc;
-use uefi::{boot, entry, runtime::Time, Status};
-use zune_png::{zune_core::colorspace::ColorSpace, zune_core::options::DecoderOptions, PngDecoder};
+use uefi::runtime::Time;
+use uefi::{boot, entry, Status};
+use zune_png::zune_core::colorspace::ColorSpace;
+use zune_png::zune_core::options::DecoderOptions;
+use zune_png::PngDecoder;
 
-use crate::{apic::ApicTimer, archive::ArchiveReader, display::Display, pixel::*, time::TimeExt};
+use crate::apic::ApicTimer;
+use crate::archive::ArchiveReader;
+use crate::display::Display;
+use crate::pixel::*;
+use crate::time::TimeExt;
 
 mod apic;
 mod archive;

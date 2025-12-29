@@ -1,5 +1,6 @@
 use thiserror::Error;
-use uefi::{boot, println, proto::console::gop::GraphicsOutput};
+use uefi::proto::console::gop::GraphicsOutput;
+use uefi::{boot, println};
 
 use crate::pixel::Color;
 
@@ -20,11 +21,7 @@ pub enum DisplayError {
     #[error("No available display modes")]
     NoDisplayModes,
     #[error("Failed to draw at position ({x}, {y}): {reason}")]
-    DrawError {
-        x: usize,
-        y: usize,
-        reason: &'static str,
-    },
+    DrawError { x: usize, y: usize, reason: &'static str },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -80,12 +77,7 @@ impl<'a> Display<'a> {
         protected_uefi!(gop.set_mode(&mode));
 
         let mut framebuffer = gop.frame_buffer();
-        Ok(Self::new(
-            framebuffer.as_mut_ptr() as *mut u32,
-            framebuffer.size() / 4,
-            width,
-            height,
-        ))
+        Ok(Self::new(framebuffer.as_mut_ptr() as *mut u32, framebuffer.size() / 4, width, height))
     }
 
     /// Draws content onto the display at specified (x, y) coordinates with given colors.
@@ -100,11 +92,7 @@ impl<'a> Display<'a> {
         for (x, y, pixel) in content {
             if x >= frame.width || y >= frame.height {
                 println!("Attempted to draw out of bounds at x={}, y={}", x, y);
-                return Err(DisplayError::DrawError {
-                    x,
-                    y,
-                    reason: "Out of bounds",
-                });
+                return Err(DisplayError::DrawError { x, y, reason: "Out of bounds" });
             }
 
             let y_centered_offset = (self.height - frame.height) / 2;
@@ -133,9 +121,6 @@ impl<'a> Display<'a> {
     }
 
     pub fn as_frame(&self) -> Frame {
-        Frame {
-            width: self.width,
-            height: self.height,
-        }
+        Frame { width: self.width, height: self.height }
     }
 }

@@ -1,5 +1,4 @@
-use uefi::runtime;
-use uefi::Result;
+use uefi::{runtime, Result};
 
 pub trait TimeExt {
     /// Get the current time using UEFI runtime services.

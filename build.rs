@@ -1,9 +1,7 @@
-use std::{
-    env, fs,
-    io::{BufReader, Error, ErrorKind, Read as _, Write},
-    path::PathBuf,
-    process::{Command, Stdio},
-};
+use std::io::{BufReader, Error, ErrorKind, Read as _, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::{env, fs};
 
 const PNG_END: &[u8] = b"\x49\x45\x4E\x44\xAE\x42\x60\x82";
 const VIDEO_PATH: &str = "bin/bad_apple.mp4";
@@ -19,12 +17,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let archive_path = out_dir.join("video_frames.arc");
-    let mut archive = fs::File::options()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(archive_path)
-        .unwrap();
+    let mut archive =
+        fs::File::options().create(true).truncate(true).write(true).open(archive_path).unwrap();
 
     // Extract frames using `ffmpeg`
     let mut child = Command::new("ffmpeg")
