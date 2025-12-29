@@ -1,3 +1,17 @@
+/// Stateful, bufferred decoder for a simple archive format, as encoded in `build.rs`.
+///
+/// ## Format
+/// ```text
+/// +---------------------------------+|        
+/// |       Name Length (1 byte)       |  <-- Length of the name
+/// +----------------------------------+
+/// |       Name (variable length)     |  <-- UTF-8 encoded string identifying the entry
+/// +----------------------------------+
+/// |       Data Length (4 bytes)      |  <-- 4-byte little-endian integer length of the data
+/// +----------------------------------+
+/// |       Data (variable length)     |  <-- Binary entry data
+/// +----------------------------------+
+/// ```
 #[derive(Debug, Clone)]
 pub struct ArchiveReader<'a> {
     data: &'a [u8],
@@ -5,10 +19,14 @@ pub struct ArchiveReader<'a> {
 }
 
 impl<'a> ArchiveReader<'a> {
+    /// Creates the decoder's initial state, holding the raw data.
     pub fn new(data: &'a [u8]) -> Self {
         Self { data, position: 0 }
     }
 
+    /// Iterator-like method which decodes the next entry and updates the internal
+    /// state. Returns an [`Option`] of the name and the data or [`None`] when no
+    /// more entries are left to decode.
     pub fn next_file(&mut self) -> Option<(&'a str, &'a [u8])> {
         if self.position >= self.data.len() {
             return None;
