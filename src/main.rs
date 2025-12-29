@@ -12,6 +12,7 @@ use crate::archive::ArchiveReader;
 use crate::display::Display;
 use crate::memory::UefiAllocatorManager;
 use crate::pixel::*;
+use crate::serial::Serial;
 use crate::time::TimeExt;
 
 mod apic;
@@ -19,6 +20,7 @@ mod archive;
 mod display;
 mod memory;
 mod pixel;
+mod serial;
 mod time;
 
 const FRAMES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/video_frames.arc"));
@@ -30,12 +32,11 @@ const TARGET_FRAMERATE_MS: u32 = 33; // ~30 FPS
 fn main() -> uefi::Status {
     uefi::helpers::init().unwrap();
 
-    // Initialize memory, display, and APIC timer
-    let _mem_region = unsafe { UefiAllocatorManager::init() };
-
+    // Initialize frame reader, display, memory, and APIC timer
     let mut reader = ArchiveReader::new(FRAMES);
     let mut display = Display::open().expect("Failed to open display");
     let viewmodel = display.as_frame();
+    let _mem_region = unsafe { UefiAllocatorManager::init() };
     let timer = ApicTimer::calibrate(16);
 
     display.clear();
@@ -113,5 +114,19 @@ fn main() -> uefi::Status {
         }
     } else {
         uefi::Status::SUCCESS
+    }
+}
+
+#[cfg(not(feature = "qemu"))]
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    writeln!(Serial, "panic: {}", info.message()).unwrap();
+
+    if let Some(location) = info.location() {
+        writeln!(Serial, "panic: file '{}' at line {}", location.file(), location.line()).unwrap();
+    }
+
+    loop {
+        core::hint::spin_loop();
     }
 }
