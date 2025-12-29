@@ -3,7 +3,6 @@
 
 extern crate alloc;
 use uefi::runtime::Time;
-use uefi::{boot, entry, Status};
 use zune_png::zune_core::colorspace::ColorSpace;
 use zune_png::zune_core::options::DecoderOptions;
 use zune_png::PngDecoder;
@@ -11,33 +10,34 @@ use zune_png::PngDecoder;
 use crate::apic::ApicTimer;
 use crate::archive::ArchiveReader;
 use crate::display::Display;
+use crate::memory::UefiAllocatorManager;
 use crate::pixel::*;
 use crate::time::TimeExt;
 
 mod apic;
 mod archive;
 mod display;
+mod memory;
 mod pixel;
 mod time;
 
 const FRAMES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/video_frames.arc"));
-const TARGET_FRAMERATE_MS: u32 = 33; // 33; // ~30 FPS
+const TARGET_FRAMERATE_MS: u32 = 33; // ~30 FPS
 
 // TODO: Proper error handling and reporting to display
 
-#[entry]
-fn main() -> Status {
+#[uefi::entry]
+fn main() -> uefi::Status {
     uefi::helpers::init().unwrap();
 
-    // Grab display, APIC timer, and exit boot services
+    // Initialize memory, display, and APIC timer
+    let _mem_region = unsafe { UefiAllocatorManager::init() };
+
     let mut reader = ArchiveReader::new(FRAMES);
     let mut display = Display::open().expect("Failed to open display");
     let viewmodel = display.as_frame();
     let timer = ApicTimer::calibrate(16);
 
-    uefi::println!("scaled to {}x{}", display.width, display.height);
-
-    let _mmap = unsafe { boot::exit_boot_services(None) };
     display.clear();
 
     while let Some((_, data)) = reader.next_file() {
@@ -106,8 +106,12 @@ fn main() -> Status {
         timer.delay(remaining_time);
     }
 
-    // Hang indefinitely in debug mode
-    loop {
-        core::hint::spin_loop()
+    if cfg!(debug_assertions) {
+        // Hang indefinitely in debug mode
+        loop {
+            core::hint::spin_loop()
+        }
+    } else {
+        uefi::Status::SUCCESS
     }
 }
