@@ -12,15 +12,15 @@ impl ApicTimer {
     /// APIC Base Address
     const LAPIC_BASE: u32 = 0xFEE00000;
     /// Spurious Interrupt Vector Register
-    const LAPIC_SVR: u32 = 0xF0;
+    const LAPIC_SVR: *mut u32 = (Self::LAPIC_BASE + 0xF0) as *mut u32;
     /// Timer Divide Configuration Register
-    const LAPIC_TDCR: u32 = 0x3E0;
+    const LAPIC_TDCR: *mut u32 = (Self::LAPIC_BASE + 0x3E0) as *mut u32;
     /// Local Vector Table Timer Register
-    const LAPIC_LVT_TIMER: u32 = 0x320;
+    const LAPIC_LVT_TIMER: *mut u32 = (Self::LAPIC_BASE + 0x320) as *mut u32;
     /// Initial Count Register (Timer count)
-    const LAPIC_ICR: u32 = 0x380;
-    /// Current Count Register (Timer current value)       
-    const LAPIC_CCR: u32 = 0x390;
+    const LAPIC_ICR: *mut u32 = (Self::LAPIC_BASE + 0x380) as *mut u32;
+    /// Current Count Register (Timer current value)
+    const LAPIC_CCR: *mut u32 = (Self::LAPIC_BASE + 0x390) as *mut u32;
 
     /// Spurious interrupt vector number
     const SPURIOUS_VECTOR: u32 = 0xFF;
@@ -36,9 +36,8 @@ impl ApicTimer {
     /// precision, 16 is commonly used.
     pub fn init(frequency: u32, divisor: u32) -> Self {
         // Enable APIC with spurious interrupt vector
-        let apic_svr = (Self::LAPIC_BASE + Self::LAPIC_SVR) as *mut u32;
         unsafe {
-            apic_svr.write_volatile(Self::APIC_SW_ENABLE | Self::SPURIOUS_VECTOR);
+            Self::LAPIC_SVR.write_volatile(Self::APIC_SW_ENABLE | Self::SPURIOUS_VECTOR);
         }
 
         let timer = ApicTimer { frequency, divisor };
@@ -55,23 +54,19 @@ impl ApicTimer {
     /// of two from 1 to 128 (i.e., 1, 2, 4, 8, 16, 32, 64, or 128). For high
     /// precision, 16 is commonly used.
     pub fn calibrate(divisor: u32) -> Self {
-        let apic_lvt_timer = (Self::LAPIC_BASE + Self::LAPIC_LVT_TIMER) as *mut u32;
-        let apic_icr = (Self::LAPIC_BASE + Self::LAPIC_ICR) as *mut u32;
-        let apic_ccr = (Self::LAPIC_BASE + Self::LAPIC_CCR) as *mut u32;
-
         // Emit the initial divisor into the register before measuring
         let _ = Self::init(0, divisor);
 
         let actual_frequency = unsafe {
             // Oneshot mode, masked interrupt, max initial count
-            apic_lvt_timer.write_volatile(Self::LVT_MASKED);
-            apic_icr.write_volatile(0xFFFFFFFF);
+            Self::LAPIC_LVT_TIMER.write_volatile(Self::LVT_MASKED);
+            Self::LAPIC_ICR.write_volatile(0xFFFFFFFF);
 
             // Wait for 10ms using PIT
             Self::pit_sleep_10ms();
 
             // Read how much the timer counted down
-            let current_count = apic_ccr.read_volatile();
+            let current_count = Self::LAPIC_CCR.read_volatile();
             let ticks_in_10ms = 0xFFFFFFFF - current_count;
 
             (ticks_in_10ms as u64 * 100 * divisor as u64) as u32
@@ -162,7 +157,6 @@ impl ApicTimer {
     /// The APIC Timer Divide Configuration Register uses a specific encoding
     /// for divisor values, not the divisor value directly.
     pub fn set_divisor(&self, divisor: u32) {
-        let apic_tdcr = (Self::LAPIC_BASE + Self::LAPIC_TDCR) as *mut u32;
         let encoded = match divisor {
             1 => 0b1011,
             2 => 0b0000,
@@ -179,7 +173,7 @@ impl ApicTimer {
         };
 
         unsafe {
-            apic_tdcr.write_volatile(encoded);
+            Self::LAPIC_TDCR.write_volatile(encoded);
         }
     }
 
@@ -191,13 +185,10 @@ impl ApicTimer {
         let ticks_per_ms = effective_frequency / 1_000;
         let ticks = delay_ms * ticks_per_ms;
 
-        let apic_icr = (Self::LAPIC_BASE + Self::LAPIC_ICR) as *mut u32;
-        let apic_lvt_timer = (Self::LAPIC_BASE + Self::LAPIC_LVT_TIMER) as *mut u32;
-
         unsafe {
             // Set mode to oneshot (0x0) and mask the interrupt
-            apic_lvt_timer.write_volatile(Self::LVT_MASKED);
-            apic_icr.write_volatile(ticks);
+            Self::LAPIC_LVT_TIMER.write_volatile(Self::LVT_MASKED);
+            Self::LAPIC_ICR.write_volatile(ticks);
         }
 
         self.wait_for_timer();
@@ -205,9 +196,8 @@ impl ApicTimer {
 
     /// Wait for the APIC timer to finish counting down to zero.
     fn wait_for_timer(&self) {
-        let apic_ccr = (Self::LAPIC_BASE + Self::LAPIC_CCR) as *mut u32;
         unsafe {
-            while apic_ccr.read_volatile() > 0 {
+            while Self::LAPIC_CCR.read_volatile() > 0 {
                 core::hint::spin_loop();
             }
         }
