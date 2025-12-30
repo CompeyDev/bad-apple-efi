@@ -2,6 +2,9 @@
 #![no_std]
 
 extern crate alloc;
+
+use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt::Write;
 
 use uefi::runtime::Time;
@@ -43,6 +46,11 @@ fn main() -> uefi::Status {
 
     display.clear();
 
+    // PERF: We allocate this buffers once, and set their sizes on the initial frame,
+    // then reuse them for the rest of the frames
+    let mut pixels = Vec::new();
+    let mut scaled = Vec::new();
+
     while let Some((_, data)) = reader.next_file() {
         let start = Time::now().unwrap().as_timestamp();
 
@@ -55,32 +63,56 @@ fn main() -> uefi::Status {
                 .set_max_height(display.height),
         );
 
-        let pixels = decoder.decode().unwrap().u8().unwrap();
+        if pixels.is_empty() {
+            // Allocate the maximum possible buffer size, and resize it once we decode
+            // the image and have the `PngInfo` with the real dimensions
+            pixels = vec![0u8; display.width * display.height * 4 /* max channels size */];
+        }
+
+        // Decode the image into the buffer
+        decoder.decode_into(&mut pixels).unwrap();
+
+        let scaled_width = display.width;
+        let scaled_height = display.height;
+
         let colorspace = decoder.get_colorspace().unwrap();
-        let info = decoder.get_info().unwrap();
-        let bytes_per_pixel = match colorspace {
+        let channels = match colorspace {
             ColorSpace::RGB => RGB_CHANNELS_SIZE,
             ColorSpace::RGBA => RGBA_CHANNELS_SIZE,
             ColorSpace::Luma => LUMA_CHANNELS_SIZE,
             _ => continue,
         };
 
-        let scaled_width = display.width;
-        let scaled_height = display.height;
-        let scaled = scale_nn_fast(
+        let (original_width, original_height) = {
+            let info = decoder.get_info().unwrap();
+            let dims = (info.width, info.height);
+
+            // Actually resize the buffer if required
+            pixels.resize(dims.0 * dims.1 * channels, 0u8);
+            dims
+        };
+
+        if scaled.is_empty() {
+            // Allocate the buffer if not already initialized
+            scaled = vec![0u8; scaled_width * scaled_height * channels];
+        }
+
+        // Scale the image up
+        scale_nn_fast(
             &pixels,
-            info.width,
-            info.height,
+            original_width,
+            original_height,
             scaled_width,
             scaled_height,
-            bytes_per_pixel,
+            channels,
+            &mut scaled,
         );
 
         let content = (0..scaled_height).flat_map(|y| {
             (0..scaled_width).map({
                 let pixels_inner = &scaled;
                 move |x| {
-                    let idx = (y * scaled_width + x) * bytes_per_pixel;
+                    let idx = (y * scaled_width + x) * channels;
                     let pixel = match colorspace {
                         ColorSpace::RGB | ColorSpace::RGBA => Color::Rgb(
                             pixels_inner[idx],
