@@ -26,8 +26,8 @@ pub enum DisplayError {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Frame {
-    width: usize,
-    height: usize,
+    pub width: usize,
+    pub height: usize,
 }
 
 impl<'a> Display<'a> {
