@@ -39,6 +39,14 @@ impl Write for Serial {
     }
 }
 
+#[macro_export]
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        writeln!(Serial, $($arg)*).unwrap();
+    }};
+}
+
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 mod x86 {
     use core::arch::asm;
