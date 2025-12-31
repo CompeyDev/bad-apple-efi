@@ -1,10 +1,11 @@
 #![cfg(target_arch = "x86_64")]
 
 use core::arch::asm;
+use core::arch::x86_64::*;
 
-pub const XCR0_X87: u32 = 1 << 0;
-pub const XCR0_SSE: u32 = 1 << 1;
-pub const XCR0_AVX: u32 = 1 << 2;
+pub const XCR0_X87: u64 = 1 << 0;
+pub const XCR0_SSE: u64 = 1 << 1;
+pub const XCR0_AVX: u64 = 1 << 2;
 
 pub const CR0_MASK: u64 = 0xFFFFFFFFFFFFFFFB;
 pub const CR0_OR: u64 = 0x22;
@@ -71,48 +72,19 @@ pub unsafe extern "C" fn init_fpu() {
 #[no_mangle]
 pub unsafe extern "C" fn init_avx() {
     if is_avx_supported() {
-        asm!(
-            "xor ecx, ecx",
-            "mov eax, {xcr0}",
-            "xor edx, edx",
-            "xsetbv",
-            xcr0 = const XCR0_X87 | XCR0_SSE | XCR0_AVX,
-            options(nostack)
-        );
+        _xsetbv(0, XCR0_X87 | XCR0_SSE | XCR0_AVX);
     }
 }
 
 /// Returns whether `XSAVE` (indicated by `CPUID.1:ECX[26]`) is supported by the processor.
 #[inline(always)]
-unsafe fn is_xsave_supported() -> bool {
-    let ecx: u32;
-    asm!(
-        "push rbx",     // Save rbx (LLVM uses it internally)
-        "mov eax, 1",
-        "cpuid",
-        "pop rbx",      // Restore rbx
-        out("eax") _,
-        out("ecx") ecx,
-        out("edx") _,
-    );
-
-    (ecx & (1 << CPUID_XSAVE_BIT)) != 0
+pub fn is_xsave_supported() -> bool {
+    (__cpuid(1).ecx & (1 << CPUID_XSAVE_BIT)) != 0
 }
 
 /// Returns whether AVX (Advanced Vector Extensions) support (indicated by`CPUID.1:ECX[28]`) is
 /// present in the processor.
 #[inline(always)]
-unsafe fn is_avx_supported() -> bool {
-    let ecx: u32;
-    asm!(
-        "push rbx",     // Save rbx (LLVM uses it internally)
-        "mov eax, 1",
-        "cpuid",
-        "pop rbx",      // Restore rbx
-        out("eax") _,
-        out("ecx") ecx,
-        out("edx") _,
-    );
-
-    (ecx & (1 << CPUID_AVX_BIT)) != 0
+pub fn is_avx_supported() -> bool {
+    (__cpuid(1).ecx & (1 << CPUID_AVX_BIT)) != 0
 }
