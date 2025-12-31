@@ -3,15 +3,15 @@
 The [bad apple video](https://youtu.be/FtutLA63Cp8) but bootable, powered by 🦀
 
 > [!NOTE]  
-> The EFI application does not actually include the audio, it has merely been `ffmpeg`'d into the demo video.
-> Audio support would involve a complete refactor and removal of all reliance on [GOP](https://wiki.osdev.org/GOP),
-> and instead move towards writing directly to the frame buffer, so that [PC Speaker](https://wiki.osdev.org/PC_Speaker) can be used,
-> which requires an exit of boot services. [Pull requests](https://github.com/CompeyDev/bad-apple-efi/pulls) are welcome!
+> The EFI application does not support audio yet. Audio support has been planned, and will likely be 
+> implemented using [PC Speaker](https://wiki.osdev.org/PC_Speaker), and a simple MIDI track. Open a
+> [Pull Request](https://github.com/CompeyDev/bad-apple-efi/pulls) if you have a more ambitious method
+> in mind!
 
 <details>
   <summary>Preview</summary>
 
-  https://github.com/CompeyDev/bad-apple-efi/assets/74418041/efc399e5-9ccb-45f0-91a2-301c9ec8657c
+  https://github.com/user-attachments/assets/f4a59731-22d5-4b55-8f0b-b9947a492434
 </details>
 
 
