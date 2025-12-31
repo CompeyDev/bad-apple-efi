@@ -166,8 +166,9 @@ macro_rules! resize {
     }};
 }
 
-/// A fast, SIMD-base nearest-neighbour scaling implementation for per-frame scaling.
-/// Compromises slightly on quality over performance.
+/// A fast, SSE-based nearest-neighbour scaling implementation for per-frame scaling.
+/// Compromises slightly on quality over performance. Used as a fallback when AVX SIMD
+/// is unavailable.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn scale_nn_fast(

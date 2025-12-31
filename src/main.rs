@@ -4,10 +4,13 @@
 extern crate alloc;
 
 use alloc::vec;
-use alloc::vec::Vec;
+use core::ffi::c_void;
 use core::fmt::Write;
 
+use fast_image_resize::images::Image;
+use fast_image_resize::{PixelType, Resizer};
 use uefi::runtime::Time;
+use uefi::{boot, table, Handle, Status};
 use zune_png::zune_core::colorspace::ColorSpace;
 use zune_png::zune_core::options::DecoderOptions;
 use zune_png::PngDecoder;
@@ -22,6 +25,7 @@ use crate::time::TimeExt;
 
 mod apic;
 mod archive;
+mod cpu_features;
 mod display;
 mod memory;
 mod pixel;
@@ -31,10 +35,40 @@ mod time;
 const FRAMES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/video_frames.arc"));
 const TARGET_FRAMERATE_MS: u32 = 33; // ~30 FPS
 
-// TODO: Proper error handling and reporting to display
+#[unsafe(naked)]
+#[unsafe(export_name = "efi_main")]
+unsafe extern "efiapi" fn main() {
+    // UEFI entrypoint which initializes required CPU features and calls the
+    // actual main implementation. This is a naked function to prevent any
+    // tampering or code injection by the compiler which may be depend on
+    // uninitialized features (e.g. hardware floats), since the compiler is
+    // configured to assume some features are guaranteed to exist.
 
-#[uefi::entry]
-fn main() -> uefi::Status {
+    core::arch::naked_asm!(
+        // Save UEFI parameters temporarily
+        "push rcx", // image handle
+        "push rdx", // system table
+
+        "call {init_fpu}",
+        "call {init_avx}",
+
+        // Restore parameters and trigger real main
+        "pop rdx",
+        "pop rcx",
+        "jmp {main_impl}",
+
+        init_fpu = sym cpu_features::init_fpu,
+        init_avx = sym cpu_features::init_avx,
+        main_impl = sym main_impl,
+    )
+}
+
+fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void) -> Status {
+    unsafe {
+        boot::set_image_handle(internal_image_handle);
+        table::set_system_table(internal_system_table.cast());
+    }
+
     uefi::helpers::init().unwrap();
 
     // Initialize frame reader, display, memory, and APIC timer
@@ -47,9 +81,15 @@ fn main() -> uefi::Status {
     display.clear();
 
     // PERF: We allocate this buffers once, and set their sizes on the initial frame,
-    // then reuse them for the rest of the frames
-    let mut pixels = Vec::new();
-    let mut scaled = Vec::new();
+    // then reuse them for the rest of the frames. Since we do not know the number of
+    // channels, we assume the maximum possible channel count initially
+    const LARGEST_PIXEL_TYPE: PixelType = PixelType::U8x4;
+    let scaled_width = display.width;
+    let scaled_height = display.height;
+
+    let mut pixels = vec![0u8; display.width * display.height * LARGEST_PIXEL_TYPE.size()];
+    let mut scaled = Image::new(scaled_width as u32, scaled_height as u32, LARGEST_PIXEL_TYPE);
+    let mut resizer = Resizer::new();
 
     while let Some((_, data)) = reader.next_file() {
         let start = Time::now().unwrap().as_timestamp();
@@ -63,56 +103,52 @@ fn main() -> uefi::Status {
                 .set_max_height(display.height),
         );
 
-        if pixels.is_empty() {
-            // Allocate the maximum possible buffer size, and resize it once we decode
-            // the image and have the `PngInfo` with the real dimensions
-            pixels = vec![0u8; display.width * display.height * 4 /* max channels size */];
-        }
-
         // Decode the image into the buffer
         decoder.decode_into(&mut pixels).unwrap();
 
-        let scaled_width = display.width;
-        let scaled_height = display.height;
-
         let colorspace = decoder.get_colorspace().unwrap();
-        let channels = match colorspace {
-            ColorSpace::RGB => RGB_CHANNELS_SIZE,
-            ColorSpace::RGBA => RGBA_CHANNELS_SIZE,
-            ColorSpace::Luma => LUMA_CHANNELS_SIZE,
+        let pixel_type = match colorspace {
+            ColorSpace::RGB => PixelType::U8x3,
+            ColorSpace::RGBA => PixelType::U8x4,
+            ColorSpace::Luma => PixelType::U8,
             _ => continue,
         };
+
+        if scaled.pixel_type() != pixel_type {
+            // Should only reallocate for the first frame, in case our assumption isn't true
+            scaled = Image::new(scaled_width as u32, scaled_height as u32, pixel_type);
+        }
 
         let (original_width, original_height) = {
             let info = decoder.get_info().unwrap();
             let dims = (info.width, info.height);
 
             // Actually resize the buffer if required
-            pixels.resize(dims.0 * dims.1 * channels, 0u8);
+            pixels.resize(dims.0 * dims.1 * pixel_type.size(), 0u8);
             dims
         };
 
-        if scaled.is_empty() {
-            // Allocate the buffer if not already initialized
-            scaled = vec![0u8; scaled_width * scaled_height * channels];
-        }
-
+        // TODO: Detect SIMD support and fallback to basic implementation if unsupported
         // Scale the image up
-        scale_nn_fast(
-            &pixels,
-            original_width,
-            original_height,
-            scaled_width,
-            scaled_height,
-            channels,
-            &mut scaled,
-        );
+        resizer
+            .resize(
+                &Image::from_slice_u8(
+                    original_width as u32,
+                    original_height as u32,
+                    pixels.as_mut_slice(),
+                    PixelType::U8x3,
+                )
+                .unwrap(),
+                &mut scaled,
+                None,
+            )
+            .unwrap();
 
         let content = (0..scaled_height).flat_map(|y| {
             (0..scaled_width).map({
-                let pixels_inner = &scaled;
+                let pixels_inner = scaled.buffer();
                 move |x| {
-                    let idx = (y * scaled_width + x) * channels;
+                    let idx = (y * scaled_width + x) * pixel_type.size();
                     let pixel = match colorspace {
                         ColorSpace::RGB | ColorSpace::RGBA => Color::Rgb(
                             pixels_inner[idx],

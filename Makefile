@@ -15,6 +15,9 @@ qemu-run: build
 	mkdir -p .qemu/efi/boot
 	cp target/x86_64-unknown-uefi/release/bad-apple.efi .qemu/efi/boot/bootx64.efi
 	qemu-system-x86_64 -nodefaults -bios /usr/share/ovmf/x64/OVMF.4m.fd \
+		-cpu max \
+		-machine q35 \
+		-enable-kvm \
 		-vga std \
 		-machine q35,accel=kvm:tcg \
 		-m 512M \

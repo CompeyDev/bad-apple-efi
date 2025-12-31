@@ -15,3 +15,5 @@ zune-png = { version = "0.4.10", default-features = false }
 resize = { version = "0.8.8", features = ["no_std"], default-features = false }
 rgb = "0.8.50"
 linked_list_allocator = "0.10.5"
+fast_image_resize = { git = "https://github.com/CompeyDev/fast_image_resize", branch = "feat/no-std", default-features = false }
+libm = "0.2.15"

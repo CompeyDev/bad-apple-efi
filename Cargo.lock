@@ -9,9 +9,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "autocfg"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+
+[[package]]
 name = "bad-apple"
 version = "0.1.0"
 dependencies = [
+ "fast_image_resize",
+ "libm",
  "linked_list_allocator",
  "resize",
  "rgb",
@@ -49,6 +57,17 @@ name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+
+[[package]]
+name = "fast_image_resize"
+version = "5.4.0"
+source = "git+https://github.com/CompeyDev/fast_image_resize?branch=feat%2Fno-std#e238aa91b4a150f383393e158c3049ee2f2c8fce"
+dependencies = [
+ "cfg-if",
+ "libm",
+ "num-traits",
+ "thiserror",
+]
 
 [[package]]
 name = "foldhash"
@@ -96,6 +115,15 @@ name = "log"
 version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90ed8c1e510134f979dbc4f070f87d4313098b704861a105fe34231c70a3901c"
+
+[[package]]
+name = "num-traits"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "proc-macro2"
