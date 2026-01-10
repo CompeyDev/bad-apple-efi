@@ -43,6 +43,8 @@ impl Write for Serial {
 macro_rules! println {
     ($($arg:tt)*) => {{
         use core::fmt::Write;
+        use $crate::serial::Serial;
+
         writeln!(Serial, $($arg)*).unwrap();
     }};
 }
