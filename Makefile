@@ -18,6 +18,7 @@ qemu-run: build
 		-cpu max \
 		-machine q35 \
 		-enable-kvm \
+		-audiodev pa,id=speaker -machine pcspk-audiodev=speaker \
 		-vga std \
 		-machine q35,accel=kvm:tcg \
 		-m 512M \

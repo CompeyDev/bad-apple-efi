@@ -9,7 +9,6 @@ use core::fmt::Write;
 
 use fast_image_resize::images::Image;
 use fast_image_resize::{PixelType, Resizer};
-use uefi::runtime::Time;
 use uefi::{boot, table, Handle, Status};
 use zune_png::zune_core::colorspace::ColorSpace;
 use zune_png::zune_core::options::DecoderOptions;
@@ -19,19 +18,22 @@ use crate::apic::ApicTimer;
 use crate::archive::ArchiveReader;
 use crate::display::Display;
 use crate::memory::UefiAllocatorManager;
+use crate::midi::MidiReader;
+use crate::pcs::PCSpeaker;
 use crate::pixel::*;
 use crate::serial::Serial;
-use crate::time::TimeExt;
 
 mod apic;
 mod archive;
 mod cpu_features;
 mod display;
 mod memory;
+mod midi;
+mod pcs;
 mod pixel;
 mod serial;
-mod time;
 
+const AUDIO_MIDI: &[u8] = include_bytes!("../bin/bad_apple.mid");
 const FRAMES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/video_frames.arc"));
 const TARGET_FRAMERATE_MS: u32 = 33; // ~30 FPS
 
@@ -80,6 +82,13 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
 
     display.clear();
 
+    let mut midi = MidiReader::new(AUDIO_MIDI).expect("Failed to parse MIDI");
+    let mono_events = if !midi.info().unwrap().is_monophonic() {
+        midi.as_monophonic().unwrap()
+    } else {
+        midi.parse().unwrap()
+    };
+
     // PERF: We allocate this buffers once, and set their sizes on the initial frame,
     // then reuse them for the rest of the frames. Since we do not know the number of
     // channels, we assume the maximum possible channel count initially
@@ -91,9 +100,12 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
     let mut scaled = Image::new(scaled_width as u32, scaled_height as u32, LARGEST_PIXEL_TYPE);
     let mut resizer = Resizer::new();
 
-    while let Some((_, data)) = reader.next_file() {
-        let start = Time::now().unwrap().as_timestamp();
+    // NOTE: UEFI runtime services times are sometimes very inaccurate, so we track it
+    // ourselves
+    let mut elapsed_ms = 0u32;
+    let mut next_event_idx = 0;
 
+    while let Some((_, data)) = reader.next_file() {
         // TODO: Downscale if exceeding size
         let mut decoder = PngDecoder::new_with_options(
             data,
@@ -111,7 +123,11 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
             ColorSpace::RGB => PixelType::U8x3,
             ColorSpace::RGBA => PixelType::U8x4,
             ColorSpace::Luma => PixelType::U8,
-            _ => continue,
+            _ => {
+                // Unsupported pixel type, skip frame
+                elapsed_ms += TARGET_FRAMERATE_MS;
+                continue;
+            }
         };
 
         if scaled.pixel_type() != pixel_type {
@@ -172,10 +188,48 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
 
         let _ = display.draw(content, viewmodel);
 
-        let end = Time::now().unwrap().as_timestamp();
-        let remaining_time = TARGET_FRAMERATE_MS.saturating_sub(end - start);
-        timer.delay(remaining_time);
+        let next_frame_time = elapsed_ms + TARGET_FRAMERATE_MS;
+        while next_event_idx < mono_events.len() {
+            let event = &mono_events[next_event_idx];
+            let note_start = event.timestamp_ms as u32;
+            let note_end = note_start + event.duration_ms;
+
+            if note_start < next_frame_time {
+                // Events before next frame
+
+                if note_start >= elapsed_ms {
+                    // Event during this frame
+                    let delay_to_note = note_start.saturating_sub(elapsed_ms);
+                    if delay_to_note > 0 {
+                        timer.delay(delay_to_note);
+                        elapsed_ms += delay_to_note;
+                    }
+                    PCSpeaker::play_note(event.note);
+                }
+
+                if note_end < next_frame_time && note_end > elapsed_ms {
+                    // Event ends before next frame
+                    let delay_to_end = note_end.saturating_sub(elapsed_ms);
+                    timer.delay(delay_to_end);
+                    elapsed_ms += delay_to_end;
+                    PCSpeaker::silence();
+                }
+
+                next_event_idx += 1;
+            } else {
+                // Event after next frame
+                break;
+            }
+        }
+
+        let remaining = next_frame_time.saturating_sub(elapsed_ms);
+        timer.delay(remaining);
+
+        elapsed_ms += remaining;
     }
+
+    // Silence any stray note
+    PCSpeaker::silence();
 
     if cfg!(debug_assertions) {
         // Hang indefinitely in debug mode
