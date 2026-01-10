@@ -151,7 +151,6 @@ impl MidiReader {
         }
 
         let mut max_simultaneous_notes = 0;
-        let mut current_simultaneous_notes = 0;
         let mut active_notes = Vec::new();
 
         let mut timeline = Vec::new();
@@ -165,8 +164,7 @@ impl MidiReader {
         for (_time, is_on, note) in timeline {
             if is_on {
                 active_notes.push(note);
-                current_simultaneous_notes = active_notes.len();
-                max_simultaneous_notes = max_simultaneous_notes.max(current_simultaneous_notes);
+                max_simultaneous_notes = max_simultaneous_notes.max(active_notes.len());
             } else {
                 active_notes.retain(|n| *n != note);
             }
