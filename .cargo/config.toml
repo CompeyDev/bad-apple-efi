@@ -1,3 +1,6 @@
 [build]
 target = "x86_64-unknown-uefi"
 rustflags = ["-C", "target-feature=+sse,+sse2,+sse4.1,+avx,+avx2,-soft-float"]
+
+[alias]
+xtask = "run --quiet --release --target x86_64-unknown-linux-gnu --manifest-path ./xtask/Cargo.toml --"

@@ -3,6 +3,11 @@ name = "bad-apple"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+resolver = "3"
+members = ["xtask", "."]
+default-members = ["."]
+
 [features]
 default = []
 high_res = []
