@@ -27,13 +27,10 @@ other distributions.
 sudo pacman -S qemu-base qemu-ui-gtk ovmf
 
 # Clone the repository
-git clone https://github.com/CompeyDev/bad-apple-efi.git
+git clone https://github.com/CompeyDev/bad-apple-efi.git && cd bad-apple-efi
 
-# Generate ASCII frames & compile EFI
-make build
-
-# Run in QEMU
-make qemu-run
+# Build and run in QEMU 
+cargo xtask qemu-run
 ```
 
 ### Precompiled
