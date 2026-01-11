@@ -17,3 +17,4 @@ rgb = "0.8.50"
 linked_list_allocator = "0.10.5"
 fast_image_resize = { version = "5.6.0", features = ["no_std"], default-features = false }
 libm = "0.2.15"
+spin = { version = "0.10.0", features = ["lazy"], default-features = false }
