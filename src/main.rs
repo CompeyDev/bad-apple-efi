@@ -25,12 +25,15 @@ use crate::serial::Serial;
 
 mod apic;
 mod archive;
+mod asm;
 mod cpu_features;
 mod display;
+mod interrupts;
 mod memory;
 mod midi;
 mod pcs;
 mod pixel;
+mod segments;
 mod serial;
 
 const AUDIO_MIDI: &[u8] = include_bytes!("../bin/bad_apple.mid");

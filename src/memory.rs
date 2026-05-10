@@ -2,6 +2,8 @@ use linked_list_allocator::LockedHeap;
 use uefi::boot::{exit_boot_services, MemoryDescriptor, MemoryType, PAGE_SIZE};
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
 
+use crate::interrupts::IDT;
+use crate::segments::GDT;
 use crate::serial::Serial;
 
 #[global_allocator]
@@ -30,8 +32,13 @@ impl UefiAllocatorManager {
         let mmap = exit_boot_services(None);
         let region = Self::find_memory_region(mmap).expect("No usable memory found in memory map");
 
+        // I/O
         ALLOCATOR.lock().init(region.start as *mut u8, region.size);
         Serial::init();
+
+        // Interrupts
+        GDT.load();
+        IDT.load();
 
         region
     }
