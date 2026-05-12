@@ -111,12 +111,16 @@ impl Gdt {
     }
 
     pub unsafe fn load(&self) {
-        let mut entries = *self.entries.get();
-        entries[0] = GdtEntry::ZERO;
-        entries[1] = GdtEntry::kernel_code();
-        entries[2] = GdtEntry::kernel_data();
-        entries[3] = GdtEntry::user_code();
-        entries[4] = GdtEntry::user_data();
+        // NOTE:
+        // Don't deref here, we want a pointer to the *static* storage, we deref
+        // every single index instead to get stack copies. If we deref'd here, a
+        // stack copy would be handed to the gdtr which would be invalid
+        let entries_ptr = self.entries.get();
+        (*entries_ptr)[0] = GdtEntry::ZERO;
+        (*entries_ptr)[1] = GdtEntry::kernel_code();
+        (*entries_ptr)[2] = GdtEntry::kernel_data();
+        (*entries_ptr)[3] = GdtEntry::user_code();
+        (*entries_ptr)[4] = GdtEntry::user_data();
 
         #[repr(C, packed)]
         struct Gdtr {
@@ -126,7 +130,7 @@ impl Gdt {
 
         let gdtr = Gdtr {
             limit: (core::mem::size_of::<GdtEntry>() * GDT_ENTRIES - 1) as u16,
-            base: entries.as_ptr() as u64,
+            base: entries_ptr as u64,
         };
 
         asm!("lgdt [{}]", in(reg) &gdtr, options(readonly, nostack, preserves_flags));
