@@ -135,6 +135,7 @@ impl InterruptSemaphore {
     }
 
     /// Signal that the interrupt has completed. Called from interrupt handler.
+    #[allow(unused)]
     pub fn release(&self) {
         self.completed.store(true, Ordering::SeqCst);
     }
