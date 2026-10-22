@@ -11,6 +11,8 @@ const PRINT_PREFIX: &str = "[xtask]";
 
 // TODO(nick): auto-generate these without introducing another crate.
 const HELP_TEXT: &str = "\
+Usage: cargo xtask <task> [cargo args...] [-- qemu args...]
+
 Available tasks:
   build
     build for the UEFI target
@@ -22,14 +24,22 @@ Available tasks:
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
-    let maybe_argument = env::args().nth(1).as_ref().map(|argument| argument.trim().to_lowercase());
+    let mut args = env::args().skip(1);
+    let maybe_argument = args.next().map(|argument| argument.trim().to_lowercase());
+
+    // Split the remaining arguments at `--` into ones for cargo and ones for QEMU
+    let rest: Vec<String> = args.collect();
+    let (cargo_args, qemu_args) = match rest.iter().position(|arg| arg == "--") {
+        Some(i) => (&rest[..i], &rest[i + 1..]),
+        None => (&rest[..], &[][..]),
+    };
 
     let runner = TaskRunner::new()?;
 
     match maybe_argument.as_deref() {
-        Some("build") => runner.task_build(),
-        Some("clean") => runner.task_clean(),
-        Some("qemu-run") => runner.task_qemu_run(),
+        Some("build") => runner.task_build(cargo_args),
+        Some("clean") => runner.task_clean(cargo_args),
+        Some("qemu-run") => runner.task_qemu_run(cargo_args, qemu_args),
         Some(invalid_task) => {
             eprintln!("{HELP_TEXT}");
             Err(format!("invalid task: {invalid_task}").into())
@@ -54,11 +64,12 @@ impl TaskRunner {
         Ok(Self { root })
     }
 
-    fn cargo(&self, args: &'static str) -> Result<()> {
-        self.stdout(format!("running: cargo {args}"));
+    fn cargo(&self, command: &str, extra: &[String]) -> Result<()> {
+        let args: Vec<&str> = command.split(' ').chain(extra.iter().map(String::as_str)).collect();
+        self.stdout(format!("running: cargo {}", args.join(" ")));
 
         let mut cmd = Command::new("cargo");
-        match cmd.current_dir(&self.root).args(args.trim().split(" ")).status()?.success() {
+        match cmd.current_dir(&self.root).args(&args).status()?.success() {
             true => Ok(()),
             false => Err("cargo command failed".into()),
         }
@@ -88,28 +99,27 @@ impl TaskRunner {
         eprintln!("{PRINT_PREFIX} {contents}");
     }
 
-    pub fn task_build(&self) -> Result<()> {
-        self.cargo("build")?;
+    pub fn task_build(&self, cargo_args: &[String]) -> Result<()> {
+        self.cargo("build", cargo_args)?;
         Ok(())
     }
 
-    #[allow(unused)]
-    pub fn task_build_release(&self) -> Result<()> {
-        self.cargo("build --release")?;
+    pub fn task_build_release(&self, cargo_args: &[String]) -> Result<()> {
+        self.cargo("build --release", cargo_args)?;
         self.stdout(format!("binary size: {}", self.release_size()?));
         Ok(())
     }
 
-    pub fn task_clean(&self) -> Result<()> {
+    pub fn task_clean(&self, cargo_args: &[String]) -> Result<()> {
         fs::remove_dir_all(".qemu")?;
         fs::remove_file("bin/bad_apple.mp4")?;
         fs::remove_file("bin/bad_apple.mid")?;
-        self.cargo("clean")?;
+        self.cargo("clean", cargo_args)?;
         Ok(())
     }
 
-    pub fn task_qemu_run(&self) -> Result<()> {
-        self.task_build_release()?;
+    pub fn task_qemu_run(&self, cargo_args: &[String], qemu_args: &[String]) -> Result<()> {
+        self.task_build_release(cargo_args)?;
 
         let qemu_dir = PathBuf::from(".qemu/efi/boot");
         fs::create_dir_all(&qemu_dir)?;
@@ -135,6 +145,7 @@ impl TaskRunner {
             .args(["-serial", "stdio"])
             .args(["-display", "gtk"])
             .args(["-monitor", "vc"])
+            .args(qemu_args)
             .status()?
             .success();
 
