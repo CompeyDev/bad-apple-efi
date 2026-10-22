@@ -4,7 +4,6 @@ use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
 
 use crate::interrupts::IDT;
 use crate::segments::GDT;
-use crate::serial::Serial;
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
@@ -18,7 +17,7 @@ pub struct UefiAllocatorManager;
 
 impl UefiAllocatorManager {
     /// Exit boot services, initializes the global allocator with the largest
-    /// available memory region, and sets up serial console. Returns the
+    /// available memory region, and loads the GDT and IDT. Returns the
     /// [`MemoryRegion`] inhabited by the allocator.
     ///
     /// ## Errors
@@ -32,9 +31,7 @@ impl UefiAllocatorManager {
         let mmap = exit_boot_services(None);
         let region = Self::find_memory_region(mmap).expect("No usable memory found in memory map");
 
-        // I/O
         ALLOCATOR.lock().init(region.start as *mut u8, region.size);
-        Serial::init();
 
         // Interrupts
         GDT.load();

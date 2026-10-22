@@ -30,7 +30,7 @@ impl VideoPlayer {
         let container = IvfContainer::parse(data)?;
         let framerate = container.framerate();
 
-        crate::println!(
+        log::info!(
             "VideoPlayer: {}x{}, {} frames, {framerate} fps",
             container.width(),
             container.height(),

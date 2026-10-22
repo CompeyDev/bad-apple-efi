@@ -5,9 +5,9 @@ use fast_image_resize::images::Image;
 use fast_image_resize::{ImageBufferError, PixelType, ResizeError, Resizer};
 
 use crate::apic::ApicTimer;
-use crate::asm::rdtsc;
 use crate::display::Display;
 use crate::pixel::Color;
+use crate::tsc::TSC;
 use crate::video::{FrameSink, VideoError, VideoFrame};
 
 cfg_if::cfg_if! {
@@ -187,23 +187,24 @@ impl FrameSink for Pipeline<'_, '_> {
 /// error across multiple frames.
 struct FramePacer<'a> {
     timer: &'a ApicTimer,
-    tsc_hz: u64,
     period: u64,
     deadline: Option<u64>,
 }
 
 impl<'a> FramePacer<'a> {
     fn new(timer: &'a ApicTimer, tsc_hz: u64, fps: u32) -> Self {
-        Self { timer, tsc_hz, period: tsc_hz / u64::from(fps), deadline: None }
+        Self { timer, period: tsc_hz / u64::from(fps), deadline: None }
     }
 
     /// Blocks until the current frame's deadline, then schedules the next one.
     fn wait(&mut self) {
-        let now = unsafe { rdtsc() };
+        let now = TSC.now();
         let deadline = *self.deadline.get_or_insert(now);
 
-        if let Some(remaining) = deadline.checked_sub(now) {
-            self.timer.delay((remaining * 1000 / self.tsc_hz) as u32);
+        if let Some(remaining) = deadline.checked_sub(now).and_then(|ticks| TSC.to_duration(ticks))
+        {
+            let millis = remaining.as_secs() * 1000 + u64::from(remaining.subsec_millis());
+            self.timer.delay(millis as u32);
             // TODO: use APIC TSC timer mode.
         }
 

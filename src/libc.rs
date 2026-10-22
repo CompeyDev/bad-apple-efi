@@ -216,7 +216,7 @@ pub unsafe extern "C" fn vsnprintf(buf: *mut i8, size: u64, format: *const i8, a
     if result > 0 {
         if let Ok(s) = CStr::from_ptr(buf).to_str() {
             if !s.is_empty() {
-                crate::println!("libvpx: {}", s);
+                log::debug!(target: "libvpx", "{}", s);
             }
         }
     }

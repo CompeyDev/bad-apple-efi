@@ -7,14 +7,16 @@ compile_error!("only x86_64 targets are supported");
 extern crate alloc;
 
 use core::ffi::c_void;
-use core::fmt::Write;
+
+use log::{info, warn, LevelFilter};
 use uefi::{boot, table, Handle, Status};
 
 use crate::apic::ApicTimer;
 use crate::display::Display;
 use crate::memory::UefiAllocatorManager;
 use crate::pipeline::Pipeline;
-use crate::serial::Serial;
+use crate::serial::CONSOLE;
+use crate::tsc::{Tsc, TSC};
 use crate::video::VideoPlayer;
 
 mod apic;
@@ -28,6 +30,7 @@ mod pipeline;
 mod pixel;
 mod segments;
 mod serial;
+mod tsc;
 mod video;
 
 static IVF_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bad_apple.ivf"));
@@ -66,17 +69,23 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
         table::set_system_table(internal_system_table.cast());
     }
 
-    uefi::helpers::init().unwrap();
-    crate::println!("UEFI helpers initialized");
+    let level = if cfg!(debug_assertions) { LevelFilter::Debug } else { LevelFilter::Info };
+    serial::CONSOLE.init(level);
 
-    // Initialize display, memory, and APIC timer
+    uefi::helpers::init().unwrap();
+    info!("UEFI helpers initialized");
+
+    // Initialize display, memory, and timers
     let mut display = Display::open().expect("Failed to open display");
     let _mem_region = unsafe { UefiAllocatorManager::init() };
-
-    // NOTE: UEFI runtime services times are sometimes very inaccurate, so we track it
-    // ourselves
     let timer = ApicTimer::calibrate(16);
-    let tsc_hz = ApicTimer::calibrate_tsc_with_pit();
+
+    if !Tsc::is_invariant() {
+        warn!("TSC is not invariant, so frame pacing may not be accurate");
+    }
+
+    let tsc_hz = TSC.hz().expect("TSC should be calibrated");
+    info!("TSC frequency: {} MHz", tsc_hz / 1_000_000);
 
     display.clear();
 
@@ -98,11 +107,7 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
 #[cfg(not(feature = "qemu"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    writeln!(Serial, "panic: {}", info.message()).unwrap();
-
-    if let Some(location) = info.location() {
-        writeln!(Serial, "panic: file '{}' at line {}", location.file(), location.line()).unwrap();
-    }
+    CONSOLE.write_panic(info);
 
     loop {
         core::hint::spin_loop();

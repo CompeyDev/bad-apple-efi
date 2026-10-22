@@ -1,76 +1,164 @@
-use core::fmt::Write;
+use core::fmt::{self, Display, Formatter, Write};
 
-pub struct Serial;
+use log::{Level, LevelFilter, Log, Metadata, Record};
+use owo_colors::{OwoColorize, Style};
+use spin::Mutex;
+use uart_16550::backend::PioBackend;
+use uart_16550::spec::{calc_baud_rate, CLK_FREQUENCY_HZ};
+use uart_16550::{BaudRate, Config, Uart16550, Uart16550Tty};
+use uefi::boot::{self, Tpl};
 
-impl Serial {
-    pub const COM1: u16 = 0x3F8;
+use crate::tsc::TSC;
 
-    #[allow(clippy::identity_op)]
-    pub fn init() {
-        unsafe {
-            x86::outb(Self::COM1 + 1, 0x00); // Disable all interrupts
-            x86::outb(Self::COM1 + 3, 0x80); // Enable DLAB (set baud rate divisor)
-            x86::outb(Self::COM1 + 0, 0x03); // Set divisor to 3 (lo byte) 38400 baud
-            x86::outb(Self::COM1 + 1, 0x00); //                  (hi byte)
-            x86::outb(Self::COM1 + 3, 0x03); // 8 bits, no parity, one stop bit
-            x86::outb(Self::COM1 + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold
-            x86::outb(Self::COM1 + 4, 0x0B); // IRQs enabled, RTS/DSR set
-            x86::outb(Self::COM1 + 4, 0x0B); // Normal operation mode
+const COM1: u16 = 0x3F8;
+const DEFAULT_BAUD_RATE: BaudRate = BaudRate::Baud115200;
 
-            // TODO: Echo test?
+/// The global serial console instance.
+pub static CONSOLE: SerialConsole = SerialConsole::new();
+
+pub struct SerialConsole {
+    uart: Mutex<Option<Uart16550Tty<PioBackend>>>,
+}
+
+impl SerialConsole {
+    const fn new() -> Self {
+        Self { uart: Mutex::new(None) }
+    }
+
+    /// Initializes a logger using the COM1 UART serial port. Must be called before exiting
+    /// boot services.
+    ///
+    /// If an error is experienced during this process, logging is disabled.
+    pub fn init(&'static self, level: LevelFilter) {
+        // While the boot services are present, the firmware has its own console driver which
+        // also shares the same COM1 port. It is possible for one of its callbacks to consume
+        // the loopback bytes sent during the self-test, which would cause a hang as there is
+        // no timeout.
+        //
+        // SAFETY: we raise the priority level to NOTIFY for a few milliseconds of setup
+        let tpl = unsafe { boot::raise_tpl(Tpl::NOTIFY) };
+
+        // SAFETY: COM1 is a standard port address
+        let mut uart = unsafe { Uart16550::new_port(COM1) }.expect("COM1 is a valid port address");
+        let baud_rate = match uart.dll_dlm() {
+            // If the firmware already programs UART, we read and establish that as our baud
+            // rate. If not, we program it with our own baud rate
+            (0, 0) => DEFAULT_BAUD_RATE,
+            (dll, dlm) => {
+                calc_baud_rate(CLK_FREQUENCY_HZ, u16::from_le_bytes([dll, dlm]).into(), None)
+                    .map_or(DEFAULT_BAUD_RATE, BaudRate::from_integer)
+            }
+        };
+
+        let present = uart.init(Config { baud_rate, ..Config::DEFAULT }).is_ok();
+        let loopback = present.then(|| uart.test_loopback());
+        drop(tpl); // drop priority back to APPLICATION
+
+        // Register the UART instance and logger globally
+        *self.uart.lock() = present.then(|| Uart16550Tty::from_inner(uart));
+
+        if log::set_logger(self).is_ok() {
+            log::set_max_level(level);
+        }
+
+        if let Some(Err(err)) = loopback {
+            log::warn!("COM1 self-test failed ({err}), logs may not be reliable");
         }
     }
 
-    pub fn put(c: u8) {
-        unsafe {
-            while (x86::inb(Self::COM1 + 5) & 0x20) == 0 {}
-            x86::outb(Self::COM1, c);
+    /// Handles panics by bypassing the logging facade, since the logger could also be an origin
+    /// of the panic.
+    #[cfg(not(feature = "qemu"))]
+    pub(crate) fn write_panic(&self, info: &core::panic::PanicInfo) {
+        // If the lock is held, or is Some, that means UART was initialized previously
+        if !self.uart.try_lock().is_none_or(|uart| uart.is_some()) {
+            return;
+        }
+
+        // We construct a new TTY instance on the fly since the panic could have been triggered
+        // from within a log call itself, so we cannot trust the stored field
+        //
+        // SAFETY: the port was configured before, only sending bytes
+        let Ok(uart) = (unsafe { Uart16550::new_port(COM1) }) else { return };
+        let mut uart = Uart16550Tty::from_inner(uart);
+
+        let panic = Style::new().red().bold().style("panic");
+        let _ = match info.location() {
+            Some(location) => {
+                let (file, line) = (location.file(), location.line());
+                writeln!(uart, "\n{panic} at {file}:{line}: {}", info.message())
+            }
+            None => writeln!(uart, "\n{panic}: {}", info.message()),
+        };
+    }
+
+    fn write_record(out: &mut impl Write, record: &Record) -> fmt::Result {
+        let target = record
+            .target()
+            .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+            .unwrap_or(record.target());
+
+        writeln!(
+            out,
+            "{} {} {:<16} {}",
+            Timestamp(TSC.now()).dimmed(),
+            LevelTag(record.level()),
+            target.dimmed(),
+            record.args()
+        )
+    }
+}
+
+impl Log for SerialConsole {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+
+        let mut guard = self.uart.lock();
+        let Some(uart) = guard.as_mut() else { return };
+
+        let _ = Self::write_record(uart, record);
+    }
+
+    fn flush(&self) {}
+}
+
+/// A [`TSC`] reading, shown at the start of each log record.
+struct Timestamp(u64);
+
+impl Display for Timestamp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let ticks = self.0;
+
+        // Ticks from the start time when uncalibriated, seconds if TSC is calibrated
+        match TSC.to_duration(ticks) {
+            None => write!(f, "[{ticks:>12}t]"),
+            Some(time) => {
+                let (secs, micros) = (time.as_secs(), time.subsec_micros());
+                write!(f, "[{secs:>5}.{micros:06}s]")
+            }
         }
     }
 }
 
-impl Write for Serial {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for byte in s.bytes() {
-            Self::put(byte);
-        }
+/// A log level, colored and padded, shown in each log record.
+struct LevelTag(Level);
 
-        Ok(())
-    }
-}
+impl Display for LevelTag {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let style = match self.0 {
+            Level::Error => Style::new().red(),
+            Level::Warn => Style::new().yellow(),
+            Level::Info => Style::new().green(),
+            Level::Debug => Style::new().blue(),
+            Level::Trace => Style::new().bright_black(),
+        };
 
-#[macro_export]
-macro_rules! println {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        use $crate::serial::Serial;
-
-        writeln!(Serial, $($arg)*).unwrap();
-    }};
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-mod x86 {
-    use core::arch::asm;
-
-    pub unsafe fn outb(port: u16, value: u8) {
-        asm!(
-            "out dx, al",
-            in("dx") port,
-            in("al") value,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-
-    pub unsafe fn inb(port: u16) -> u8 {
-        let value: u8;
-        asm!(
-            "in al, dx",
-            in("dx") port,
-            out("al") value,
-            options(nomem, nostack, preserves_flags)
-        );
-
-        value
+        write!(f, "{:>5}", self.0.style(style))
     }
 }

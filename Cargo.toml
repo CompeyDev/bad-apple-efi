@@ -37,9 +37,12 @@ nostd-printf = "0.1.4"
 linked_list_allocator = "0.10.5"
 fast_image_resize = { version = "5.6.0", features = ["no_std"], default-features = false }
 libm = "0.2.15"
-spin = { version = "0.10.0", features = ["lazy"], default-features = false }
+spin = { version = "0.10.0", features = ["lazy", "mutex", "spin_mutex"], default-features = false }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 cfg-if = "1"
+uart_16550 = "0.9"
+log = { version = "0.4", features = ["release_max_level_info"] }
+owo-colors = "4"
 
 [build-dependencies]
 autotools = "0.2"
