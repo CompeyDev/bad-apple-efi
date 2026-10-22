@@ -1,6 +1,9 @@
 #![no_main]
 #![no_std]
 
+#[cfg(not(target_arch = "x86_64"))]
+compile_error!("only x86_64 targets are supported");
+
 extern crate alloc;
 
 use core::ffi::c_void;
