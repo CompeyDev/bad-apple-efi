@@ -124,14 +124,17 @@ impl TaskRunner {
             .args(["-machine", "q35"])
             .arg("-enable-kvm") // flag
             .args(["-audiodev", "pa,id=speaker"])
+            .args(["-audiodev", "pa,id=hda0"])
             .args(["-machine", "pcspk-audiodev=speaker"])
+            .args(["-device", "intel-hda"])
+            .args(["-device", "hda-output,audiodev=hda0"])
             .args(["-vga", "std"])
             .args(["-machine", "q35,accel=kvm:tcg"])
             .args(["-m", "512M"])
             .args(["-drive", "format=raw,file=fat:rw:.qemu"])
             .args(["-serial", "stdio"])
             .args(["-display", "gtk"])
-            .args(["-monitor", "vc:256x192"])
+            .args(["-monitor", "vc"])
             .status()?
             .success();
 
