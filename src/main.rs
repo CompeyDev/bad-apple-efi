@@ -30,7 +30,7 @@ mod segments;
 mod serial;
 mod video;
 
-static VP9_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bad_apple.ivf"));
+static IVF_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bad_apple.ivf"));
 
 #[unsafe(naked)]
 #[unsafe(export_name = "efi_main")]
@@ -80,7 +80,7 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
 
     display.clear();
 
-    let mut player = VideoPlayer::new(VP9_DATA).expect("Failed to open video");
+    let mut player = VideoPlayer::new(IVF_DATA).expect("Failed to open video");
     let mut pipeline = Pipeline::new(&mut display, &timer, tsc_hz, player.framerate());
 
     player.play(&mut pipeline).expect("Playback failed");
