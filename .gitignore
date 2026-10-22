@@ -1,4 +1,5 @@
 /target
 .qemu/
 bin/*.mp4
+bin/*.webm
 bin/*.mid

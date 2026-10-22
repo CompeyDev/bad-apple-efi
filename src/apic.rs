@@ -139,7 +139,7 @@ impl ApicTimer {
     /// We program it to fire an interrupt after 10ms and measure TSC ticks.
     #[allow(clippy::let_and_return)]
     #[rustfmt::skip]
-    fn calibrate_tsc_with_pit() -> u64 {
+    pub(crate) fn calibrate_tsc_with_pit() -> u64 {
         const PIT_FREQUENCY: u32 = 1_193_182;
         const CALIBRATION_MS: u32 = 10;
         const PIT_DIVISOR: u32 = PIT_FREQUENCY / (1000 / CALIBRATION_MS);

@@ -11,6 +11,7 @@ pub struct Display<'a> {
     framebuffer: &'a mut [u32],
     pub width: usize,
     pub height: usize,
+    stride: usize,
 }
 
 type Result<T, E = DisplayError> = core::result::Result<T, E>;
@@ -20,14 +21,6 @@ pub enum DisplayError {
     Uefi(#[from] uefi::Error),
     #[error("No available display modes")]
     NoDisplayModes,
-    #[error("Failed to draw at position ({x}, {y}): {reason}")]
-    DrawError { x: usize, y: usize, reason: &'static str },
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Frame {
-    pub width: usize,
-    pub height: usize,
 }
 
 impl<'a> Display<'a> {
@@ -37,6 +30,7 @@ impl<'a> Display<'a> {
         framebuffer_size: usize,
         width: usize,
         height: usize,
+        stride: usize,
     ) -> Display<'a> {
         Self {
             framebuffer: unsafe {
@@ -45,6 +39,7 @@ impl<'a> Display<'a> {
 
             width,
             height,
+            stride,
         }
     }
 
@@ -74,43 +69,12 @@ impl<'a> Display<'a> {
             .ok_or(DisplayError::NoDisplayModes)?;
 
         let (width, height) = mode.info().resolution();
+        let stride = mode.info().stride();
         protected_uefi!(gop.set_mode(&mode));
 
         let mut framebuffer = gop.frame_buffer();
-        Ok(Self::new(framebuffer.as_mut_ptr() as *mut u32, framebuffer.size() / 4, width, height))
-    }
-
-    /// Draws content onto the display at specified (x, y) coordinates with given colors.
-    ///
-    /// ## Errors
-    /// - If any (x, y) coordinate is out of bounds, this will return a `DrawError`.
-    pub fn draw<I: Iterator<Item = (usize, usize, Color)>>(
-        &mut self,
-        content: I,
-        frame: Frame,
-    ) -> Result<()> {
-        for (x, y, pixel) in content {
-            if x >= frame.width || y >= frame.height {
-                return Err(DisplayError::DrawError { x, y, reason: "Out of bounds" });
-            }
-
-            let y_centered_offset = (self.height - frame.height) / 2;
-            let x_centered_offset = (self.width - frame.width) / 2;
-            let offset = ((y_centered_offset + y) * self.width) + (x_centered_offset + x);
-
-            let color = if let Color::Rgb(r, g, b) = pixel {
-                ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-            } else {
-                pixel.into()
-            };
-
-            if offset < self.framebuffer.len() {
-                // HACK: Prevent potential OOB writes
-                self.framebuffer[offset] = color;
-            }
-        }
-
-        Ok(())
+        let (base, len) = (framebuffer.as_mut_ptr() as *mut u32, framebuffer.size() / 4);
+        Ok(Self::new(base, len, width, height, stride))
     }
 
     pub fn clear(&mut self) {
@@ -123,7 +87,14 @@ impl<'a> Display<'a> {
         }
     }
 
-    pub fn as_frame(&self) -> Frame {
-        Frame { width: self.width, height: self.height }
+    /// Directly writes the frame onto the display, copying its bytes row by row, skipping
+    /// any stride padding.
+    pub fn blit(&mut self, pixels: &[Color]) {
+        let rows = self.framebuffer.chunks_mut(self.stride).zip(pixels.chunks(self.width));
+        for (dst, src) in rows {
+            for (d, &c) in dst.iter_mut().zip(src) {
+                *d = c.into();
+            }
+        }
     }
 }

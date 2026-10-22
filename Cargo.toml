@@ -31,10 +31,16 @@ incremental = false         # ^ Same reason as above ^
 [dependencies]
 uefi = "0.36.1"
 thiserror = { version = "2.0.17", default-features = false }
-zune-png = { version = "0.4.10", default-features = false }
 resize = { version = "0.8.8", features = ["no_std"], default-features = false }
 rgb = "0.8.50"
+nostd-printf = "0.1.4"
 linked_list_allocator = "0.10.5"
 fast_image_resize = { version = "5.6.0", features = ["no_std"], default-features = false }
 libm = "0.2.15"
 spin = { version = "0.10.0", features = ["lazy"], default-features = false }
+zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
+cfg-if = "1"
+
+[build-dependencies]
+autotools = "0.2"
+xshell = "0.2"

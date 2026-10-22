@@ -1,87 +1,144 @@
-use std::io::{BufReader, Error, ErrorKind, Read as _, Write};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-const PNG_END: &[u8] = b"\x49\x45\x4E\x44\xAE\x42\x60\x82";
-const VIDEO_PATH: &str = "bin/bad_apple.mp4";
+use xshell::{cmd, Shell};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo::rerun-if-changed={VIDEO_PATH}");
-    println!("cargo::rerun-if-changed=build.rs");
+const VIDEO_SOURCES: [&str; 2] = ["bin/bad_apple.webm", "bin/bad_apple.mp4"];
+const VP9_ENCODE_ARGS: [&str; 10] =
+    ["-c:v", "libvpx-vp9", "-crf", "37", "-b:v", "0", "-cpu-used", "2", "-row-mt", "1"];
 
-    if !fs::exists(VIDEO_PATH).unwrap() {
-        println!("cargo::error=Video input file does not exist, acquire a video first!");
-        return Err(Box::new(Error::new(ErrorKind::NotFound, VIDEO_PATH)));
-    }
+const SUPPORTED_PIX_FMTS: [&str; 5] = ["yuv420p", "yuv422p", "yuv440p", "yuv444p", "gbrp"];
 
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let archive_path = out_dir.join("video_frames.arc");
-    let mut archive =
-        fs::File::options().create(true).truncate(true).write(true).open(archive_path).unwrap();
+const FREESTANDING_DIR: &str = "vendor/freestanding";
+const VPX_SRC_DIR: &str = "vendor/libvpx";
+const VPX_DISABLED_FEATURES: [&str; 10] = [
+    "vp8",
+    "vp9-encoder",
+    "postproc",
+    "multithread",
+    "unit-tests",
+    "webm-io",
+    "libyuv",
+    "examples",
+    "tools",
+    "docs",
+];
 
-    // Extract frames using `ffmpeg`
-    let mut child = Command::new("ffmpeg")
-        .arg("-i")
-        .arg(VIDEO_PATH)
-        .args(["-vsync", "0"])
-        .args(["-f", "image2pipe"])
-        .args(["-vcodec", "png"])
-        .arg("pipe:1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-    let stdout = child.stdout.take().unwrap();
-    let mut reader = BufReader::new(stdout);
+fn main() -> Result {
+    println!("cargo::rerun-if-changed={FREESTANDING_DIR}");
+    println!("cargo::rerun-if-changed=bin");
 
-    let mut frame_index = 1;
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 8192];
-
-    // Read frames in a bufferred manner and append them to the archive file
-    loop {
-        let n = reader.read(&mut chunk).unwrap();
-        if n == 0 {
-            break; // EOF
-        }
-
-        buffer.extend_from_slice(&chunk[..n]);
-
-        while let Some(pos) = buffer.windows(PNG_END.len()).position(|w| w == PNG_END) {
-            let png = buffer.drain(..pos + PNG_END.len()).collect::<Vec<u8>>();
-
-            let name = format!("{frame_index}.png");
-            let encoded = encode_archive_entry(name, png);
-
-            archive.write_all(&encoded).unwrap();
-            archive.flush().unwrap();
-
-            frame_index += 1
-        }
-    }
-
-    let ffmpeg_status = child.wait().unwrap();
-    if !ffmpeg_status.success() {
-        let code = ffmpeg_status.code().unwrap_or(1);
-        println!("cargo::error=FFmpeg exited with error code: {code}");
-
-        return Err(Box::new(Error::other("frames extraction failed")));
-    }
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+    build_libvpx(&out_dir)?;
+    convert_video(&out_dir)?;
 
     Ok(())
 }
 
-/// Encodes data for a given file name in the archive format.
-fn encode_archive_entry(name: String, data: Vec<u8>) -> Vec<u8> {
-    let mut encoded = Vec::new();
+fn build_libvpx(out_dir: &Path) -> Result {
+    // Include the freestanding dir as the first path, so it wins over the generated config
+    // header file when possible
+    let freestanding = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join(FREESTANDING_DIR);
+    let cflags = format!(
+        "-target x86_64-windows-msvc -mavx2 -mfma -ffreestanding -I{}",
+        freestanding.display()
+    );
 
-    // Format: [1-byte filename_length][filename][4-byte data_length][file data]
-    encoded.push(name.len() as u8);
-    encoded.extend_from_slice(name.as_bytes());
-    encoded.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    encoded.extend_from_slice(&data);
+    // Old archives are never dropped even if the new config no longer needs them, we
+    // do it manually
+    let archive = out_dir.join("build/libvpx_g.a");
+    if archive.exists() {
+        fs::remove_file(archive)?;
+    }
 
-    encoded
+    let mut config = autotools::Config::new(VPX_SRC_DIR);
+    for feature in VPX_DISABLED_FEATURES {
+        config.disable(feature, None);
+    }
+
+    // Build it!
+    let dst = config
+        .insource(false)
+        .forbid("--host")
+        .forbid("--build")
+        .forbid("--prefix")
+        .config_option("target", Some("x86_64-win64-gcc"))
+        .cflag(&cflags)
+        .env("CC", "clang")
+        .env("AR", "llvm-ar")
+        .env("AS", "nasm")
+        .make_args(vec!["target=libs".into()])
+        .make_target("libvpx_g.a")
+        .build();
+
+    println!("cargo::rustc-link-search=native={}", dst.join("build").display());
+    println!("cargo::rustc-link-lib=static=vpx_g");
+    Ok(())
+}
+
+fn convert_video(out_dir: &Path) -> Result {
+    let source = VIDEO_SOURCES
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+        .ok_or_else(|| format!("No video source found, expected one of {VIDEO_SOURCES:?}"))?;
+
+    // Look for a cache hit first instead of trying to re-encode
+    let key = BuildHasherDefault::<DefaultHasher>::new().hash_one((
+        fs::read(source)?,
+        VP9_ENCODE_ARGS,
+        SUPPORTED_PIX_FMTS,
+    ));
+
+    let cache_dir = // out dir is usually `<target>/<build-type>/build/<pkg>-<hash>`
+        out_dir.ancestors().nth(3).ok_or("unexpected OUT_DIR layout")?.join("video-cache");
+
+    let cached = cache_dir.join(format!("{key:016x}.ivf"));
+    if !cached.exists() {
+        fs::create_dir_all(&cache_dir)?;
+
+        // Write to a temporary file first, so an interrupt leaves a partial encode as a cache
+        let partial = cached.with_extension("ivf.partial");
+        transcode(source, &partial)?;
+        fs::rename(&partial, &cached)?;
+    }
+
+    // Validate the produced file
+    let mut header = [0; 12];
+    fs::File::open(&cached)?.read_exact(&mut header)?;
+    if &header[..4] != b"DKIF" || &header[8..] != b"VP90" {
+        return Err("ffmpeg output is not a VP9 IVF file".into());
+    }
+
+    fs::copy(&cached, out_dir.join("bad_apple.ivf"))?;
+    Ok(())
+}
+
+fn transcode(source: &str, output: &Path) -> Result {
+    let sh = Shell::new()?;
+    let probe = cmd!(sh, "ffprobe -v error -select_streams v:0")
+        .args(["-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0", source])
+        .quiet()
+        .read()?;
+
+    let (codec, pix_fmt) = probe.split_once(',').ok_or("ffprobe found no video stream")?;
+    let supported = SUPPORTED_PIX_FMTS.contains(&pix_fmt);
+
+    let codec_args = if codec == "vp9" && supported {
+        vec!["-c:v", "copy"]
+    } else {
+        // Keep the chroma layout when the decoder supports it, otherwise fall back to 4:2:0
+        let pix_fmt = if supported { pix_fmt } else { "yuv420p" };
+        [&VP9_ENCODE_ARGS[..], &["-pix_fmt", pix_fmt]].concat()
+    };
+
+    cmd!(sh, "ffmpeg -hide_banner -loglevel error -i {source} -map 0:v:0 -an {codec_args...}")
+        .args(["-f", "ivf", "-y"])
+        .arg(output)
+        .run()?;
+
+    Ok(())
 }
