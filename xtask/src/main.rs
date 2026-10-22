@@ -37,7 +37,7 @@ fn main() -> Result<()> {
     let runner = TaskRunner::new()?;
 
     match maybe_argument.as_deref() {
-        Some("build") => runner.task_build(cargo_args),
+        Some("build") => runner.task_build_release(cargo_args),
         Some("clean") => runner.task_clean(cargo_args),
         Some("qemu-run") => runner.task_qemu_run(cargo_args, qemu_args),
         Some(invalid_task) => {
@@ -119,7 +119,7 @@ impl TaskRunner {
     }
 
     pub fn task_qemu_run(&self, cargo_args: &[String], qemu_args: &[String]) -> Result<()> {
-        self.task_build_release(cargo_args)?;
+        self.task_build(cargo_args)?;
 
         let qemu_dir = PathBuf::from(".qemu/efi/boot");
         fs::create_dir_all(&qemu_dir)?;
@@ -130,7 +130,7 @@ impl TaskRunner {
         let ok = Command::new("qemu-system-x86_64")
             .arg("-nodefaults") // flag
             .args(["-bios", "/usr/share/ovmf/x64/OVMF.4m.fd"])
-            .args(["-cpu", "max"])
+            .args(["-cpu", "max,+invtsc"]) // QEMU hides the host's invariant TSC by default
             .args(["-machine", "q35"])
             .arg("-enable-kvm") // flag
             .args(["-audiodev", "pa,id=speaker"])
