@@ -1,6 +1,7 @@
 //! This crate is an example of the [`cargo-xtask`](https://github.com/matklad/cargo-xtask) pattern.
 
 use std::env;
+use std::fmt::Display;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -55,6 +56,20 @@ struct TaskRunner {
     root: PathBuf,
 }
 
+enum BuildProfile {
+    Debug,
+    Release,
+}
+
+impl Display for BuildProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuildProfile::Debug => write!(f, "debug"),
+            BuildProfile::Release => write!(f, "release"),
+        }
+    }
+}
+
 impl TaskRunner {
     pub fn new() -> Result<Self> {
         let root = match Path::new(CARGO_MANIFEST_DIR).ancestors().nth(1) {
@@ -75,17 +90,17 @@ impl TaskRunner {
         }
     }
 
-    fn artifact_path(&self) -> PathBuf {
+    fn artifact_path(&self, profile: BuildProfile) -> PathBuf {
         self.root
             .join("target")
             .join("x86_64-unknown-uefi")
-            .join("release")
+            .join(profile.to_string())
             .join(format!("{CRATE_NAME}.efi"))
     }
 
     #[allow(unused)]
     fn release_size(&self) -> Result<u64> {
-        Ok(File::open(self.artifact_path())?.metadata()?.len())
+        Ok(File::open(self.artifact_path(BuildProfile::Release))?.metadata()?.len())
     }
 
     fn stdout(&self, contents: impl AsRef<str>) {
@@ -123,7 +138,7 @@ impl TaskRunner {
 
         let qemu_dir = PathBuf::from(".qemu/efi/boot");
         fs::create_dir_all(&qemu_dir)?;
-        fs::copy(self.artifact_path(), qemu_dir.join("bootx64.efi"))?;
+        fs::copy(self.artifact_path(BuildProfile::Debug), qemu_dir.join("bootx64.efi"))?;
 
         self.stdout("running project in QEMU");
 
