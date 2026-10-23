@@ -117,20 +117,22 @@ impl InterruptSemaphore {
 
     /// Wait for the interrupt to complete. Blocks until signal() is called.
     pub fn wait(&self) {
-        // Reset state
-        self.completed.store(false, Ordering::SeqCst);
-
         unsafe {
-            // Enable interrupts
-            sti();
+            // Check with interrupts disabled, so one can't fire between checking and halting
+            cli();
 
             // Halt execution until an interrupt is received
             while !self.completed.load(Ordering::SeqCst) {
-                hlt();
+                // NOTE:
+                // `sti` waits until the next instruction to take effect, so the next instruction
+                // must immediately be `hlt`. Previously, debug builds had instructions inserted
+                // after the wrapper we had in asm.rs which is where it would take effect, before
+                // the actual `hlt`.
+                //
+                // `nomem` is not enabled, interrupt handlers may write to memory while halted.
+                asm!("sti", "hlt", options(nostack, preserves_flags));
+                cli();
             }
-
-            // Disable interrupts
-            cli();
         }
     }
 

@@ -238,6 +238,7 @@ impl ApicTimer {
         IDT.register_handler(Self::TIMER_VECTOR, delay_interrupt_handler);
         unsafe {
             // Oneshot mode unmasked timer with our vector
+            TIMER_SEMAPHORE.reset();
             Self::lapic_lvt_timer().write_volatile(Self::TIMER_VECTOR as u32);
             Self::lapic_icr().write_volatile(effective_ticks);
 

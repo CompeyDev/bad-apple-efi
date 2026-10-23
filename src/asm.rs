@@ -23,12 +23,6 @@ pub unsafe fn outb(port: u16, value: u8) {
 // CPU Control
 //
 
-/// Halt the CPU until the next interrupt fires.
-#[inline]
-pub unsafe fn hlt() {
-    asm!("hlt", options(nomem, nostack, preserves_flags));
-}
-
 /// Disable maskable interrupts.
 #[inline]
 pub unsafe fn cli() {

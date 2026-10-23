@@ -91,12 +91,28 @@ impl Tsc {
             // Program PIT on channel 0
             outb(0x21, master_mask | 0x01);                // mask IRQ0
             outb(0x43, 0x30);                              // channel 0, LSB then MSB, mode 0, binary
+            outb(0x20, 0x20);                              // send EOI to existing interrupts
+
+            // NOTE:
+            // The firmware programs PIT in periodic mode. One of those ticks may have been left
+            // off in a pending state while masked, which would fire immediately after the unmask,
+            // triggering the PIT measure too early. We need to handle this before our own PIT
+            // programming and measurement.
+            
+            // Ask the master controller whether IRQ0 is pending by OCW3 command (the IRR)
+            if { outb(0x20, 0x0A); inb(0x20) & 0x01 } != 0 {
+                // If the timer is pending, let it fire, and clear it
+                outb(0x21, master_mask & 0xFE); // unmask
+                PIT_MEASUREMENT.wait_for_capture();         // wait for interrupt
+                outb(0x21, master_mask | 0x01); // mask again
+                PIT_MEASUREMENT.reset();                    // throw the result away
+            }
+
             outb(0x40, (PIT_DIVISOR & 0xFF) as u8);        // divisor LSB
             outb(0x40, ((PIT_DIVISOR >> 8) & 0xFF) as u8); // divisor MSB
 
             // Capture TSC start
             let tsc_start = self.now();
-            outb(0x20, 0x20);               // send EOI to existing interrupts
             outb(0x21, master_mask & 0xFE); // unmask bit 0 to start timer
 
             // Enable interrupts and wait for PIT
