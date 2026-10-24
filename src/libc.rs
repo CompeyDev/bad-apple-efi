@@ -67,7 +67,7 @@ pub extern "C" fn free(ptr: *mut u8) {
 
     unsafe {
         let block = ptr.sub(HEADER_SIZE);
-        let size = ptr::read(ptr as *const usize);
+        let size = ptr::read(block as *const usize);
         let layout = Layout::from_size_align(HEADER_SIZE + size, MIN_ALIGNMENT).unwrap();
 
         dealloc(block, layout);
