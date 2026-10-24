@@ -127,6 +127,7 @@ impl ApicTimer {
 
         TSC.calibrate();
         let frequency = Self::calibrate_apic_with_tsc(divisor);
+        log::debug!("APIC timer base frequency: {} MHz (divisor {divisor})", frequency / 1_000_000);
 
         Self { frequency, divisor }
     }

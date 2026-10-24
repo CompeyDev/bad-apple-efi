@@ -8,7 +8,7 @@ extern crate alloc;
 
 use core::ffi::c_void;
 
-use log::{info, warn, LevelFilter};
+use log::{info, warn};
 use uefi::{boot, table, Handle, Status};
 
 use crate::apic::ApicTimer;
@@ -69,11 +69,15 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
         table::set_system_table(internal_system_table.cast());
     }
 
-    let level = if cfg!(debug_assertions) { LevelFilter::Debug } else { LevelFilter::Info };
-    serial::CONSOLE.init(level);
-
+    serial::CONSOLE.init();
     uefi::helpers::init().unwrap();
+
     info!("UEFI helpers initialized");
+    info!(
+        "CPU features: AVX={avx}, XSAVE={xsave}",
+        avx = cpu_features::is_avx_supported(),
+        xsave = cpu_features::is_xsave_supported()
+    );
 
     // Initialize display, memory, and timers
     let mut display = Display::open().expect("Failed to open display");
@@ -92,7 +96,11 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
     let mut player = VideoPlayer::new(IVF_DATA).expect("Failed to open video");
     let mut pipeline = Pipeline::new(&mut display, &timer, tsc_hz, player.framerate());
 
+    let start = TSC.now();
     player.play(&mut pipeline).expect("Playback failed");
+    if let Some(time) = TSC.to_duration(TSC.now() - start) {
+        info!("Playback finished in {time:.2?}");
+    }
 
     if cfg!(debug_assertions) {
         // Hang indefinitely in debug mode

@@ -37,7 +37,8 @@ impl VideoPlayer {
             container.frame_count(),
         );
 
-        Ok(Self { state: State::Ready { container, decoder: Vp9Decoder::new()? }, framerate })
+        let state = State::Ready { container, decoder: Vp9Decoder::new()? };
+        Ok(Self { state, framerate })
     }
 
     pub fn framerate(&self) -> u32 {
@@ -51,18 +52,25 @@ impl VideoPlayer {
     pub fn tick<S: FrameSink>(&mut self, sink: &mut S) -> Result<bool, S::Error> {
         self.state = match mem::take(&mut self.state) {
             State::Ready { container, decoder } => {
+                log::debug!("Playback started");
                 State::Playing { packets: container.packets(), decoder }
             }
 
             State::Playing { mut packets, mut decoder } => match packets.next() {
                 Some(packet) => {
+                    log::trace!("Packet at pts {}: {} bytes", packet.pts, packet.data.len());
                     decoder.send_packet(packet.data)?;
+
                     if let Some(frame) = decoder.receive_frame() {
                         sink.present(&frame)?;
+                    } else {
+                        // Hidden VP9 reference frame
+                        log::trace!("Packet at pts {} produced no frame", packet.pts);
                     }
 
                     State::Playing { packets, decoder }
                 }
+
                 None => State::Done,
             },
 

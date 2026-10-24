@@ -15,6 +15,8 @@ impl Vp9Decoder {
         let cfg = VpxCodecDecCfg { threads: 1, w: 0, h: 0 }; // dimensions inferred
         let mut ctx = unsafe { mem::zeroed() };
         unsafe { vpx_codec_dec_init(&mut ctx, vpx_codec_vp9_dx(), &cfg, 0) }.ok()?;
+
+        log::debug!("VP9 decoder initialized");
         Ok(Self { ctx })
     }
 

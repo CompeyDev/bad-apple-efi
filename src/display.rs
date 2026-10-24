@@ -63,6 +63,7 @@ impl<'a> Display<'a> {
         let mut gop = protected_uefi!(boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle));
 
         // TODO: Better scaling to use proper screen real-estate
+        let mode_count = gop.modes().count();
         let mode = gop
             .modes()
             .min_by_key(|m| m.info().resolution())
@@ -74,6 +75,15 @@ impl<'a> Display<'a> {
 
         let mut framebuffer = gop.frame_buffer();
         let (base, len) = (framebuffer.as_mut_ptr() as *mut u32, framebuffer.size() / 4);
+
+        log::info!("Display mode: {width}x{height}");
+        log::debug!(
+            "Picked mode out of {mode_count} modes: {:?} pixels, stride {stride}, {} KiB \
+             framebuffer at {base:p}",
+            mode.info().pixel_format(),
+            framebuffer.size() / 1024,
+        );
+
         Ok(Self::new(base, len, width, height, stride))
     }
 

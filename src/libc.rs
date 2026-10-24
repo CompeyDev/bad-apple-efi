@@ -38,6 +38,7 @@ pub extern "C" fn malloc(size: usize) -> *mut u8 {
     let block = unsafe { alloc(layout) };
 
     if block.is_null() {
+        log::warn!("malloc of {size} bytes failed, the heap is full");
         return ptr::null_mut();
     }
 

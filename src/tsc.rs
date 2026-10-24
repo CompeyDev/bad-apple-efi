@@ -1,5 +1,6 @@
 use core::arch::naked_asm;
 use core::arch::x86_64::__cpuid;
+use core::fmt::{self, Formatter};
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
@@ -126,7 +127,21 @@ impl Tsc {
         };
 
         self.hz.store(hz, Ordering::Relaxed);
+        log::debug!("TSC measured at {hz} Hz over a {CALIBRATION_MS}ms PIT interval");
         hz
+    }
+}
+
+/// A TSC tick count, displayed in milliseconds.
+pub struct Ms(pub u64);
+
+impl fmt::Display for Ms {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let micros = TSC
+            .to_duration(self.0)
+            .map_or(0, |time| time.as_secs() * 1_000_000 + u64::from(time.subsec_micros()));
+
+        write!(f, "{}.{:02}ms", micros / 1000, micros % 1000 / 10)
     }
 }
 

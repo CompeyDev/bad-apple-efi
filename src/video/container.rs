@@ -43,7 +43,19 @@ impl IvfContainer {
             h if h.version.get() != 0 => Err(VideoError::InvalidFormat("unsupported version")),
             h if h.header_len.get() != 32 => Err(VideoError::InvalidFormat("bad header length")),
             h if h.fourcc != *b"VP90" => Err(VideoError::InvalidFormat("not VP9")),
-            _ => Ok(Self { header, body }),
+            h => {
+                log::debug!(
+                    "IVF: {}x{}, timebase {}/{}s, {} frames, {} KiB of packets",
+                    h.width.get(),
+                    h.height.get(),
+                    h.timebase_num.get(),
+                    h.timebase_den.get(),
+                    h.frame_count.get(),
+                    body.len() / 1024,
+                );
+
+                Ok(Self { header, body })
+            }
         }
     }
 
@@ -66,7 +78,13 @@ impl IvfContainer {
 
         (u64::from(h.frame_count.get()) * u64::from(h.timebase_den.get()))
             .checked_div(u64::from(h.timebase_num.get()) * last_pts)
-            .map_or(60, |fps| fps.clamp(1, 120) as u32)
+            .map_or_else(
+                || {
+                    log::warn!("Couldn't calculate framerate from timestamps, assuming 60 fps");
+                    60
+                },
+                |fps| fps.clamp(1, 120) as u32,
+            )
     }
 
     pub fn packets(&self) -> Packets {

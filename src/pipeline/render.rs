@@ -2,13 +2,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use fast_image_resize::images::Image;
-use fast_image_resize::{ImageBufferError, PixelType, ResizeError, Resizer};
+use fast_image_resize::{PixelType, Resizer};
 
-use crate::apic::ApicTimer;
-use crate::display::Display;
+use super::PipelineError;
 use crate::pixel::Color;
-use crate::tsc::TSC;
-use crate::video::{FrameSink, VideoError, VideoFrame};
+use crate::video::VideoFrame;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "high_res")] {
@@ -25,33 +23,17 @@ cfg_if::cfg_if! {
     }
 }
 
-#[derive(Debug, Clone, Copy, thiserror::Error)]
-pub enum PipelineError {
-    #[error("video error: {0}")]
-    Video(#[from] VideoError),
-    #[error("invalid source image: {0}")]
-    Image(#[from] ImageBufferError),
-    #[error("resize failed: {0}")]
-    Resize(#[from] ResizeError),
-}
-
-/// Renders decoded frames to the display, paced to the video's framerate.
-pub struct Pipeline<'a, 'd> {
-    display: &'a mut Display<'d>,
-    pacer: FramePacer<'a>,
+/// Converts decoded video frames into display pixels, reusing its buffers across frames.
+pub struct Renderer {
     pixels: Vec<u8>,
     scaled: Image<'static>,
     resizer: Resizer,
     output: Vec<Color>,
 }
 
-impl<'a, 'd> Pipeline<'a, 'd> {
-    pub fn new(display: &'a mut Display<'d>, timer: &'a ApicTimer, tsc_hz: u64, fps: u32) -> Self {
-        let &mut Display { width, height, .. } = display;
-
+impl Renderer {
+    pub fn new(width: usize, height: usize) -> Self {
         Self {
-            display,
-            pacer: FramePacer::new(timer, tsc_hz, fps),
             pixels: Vec::new(),
             scaled: Image::new(width as u32, height as u32, PIXEL_TYPE),
             resizer: Resizer::new(),
@@ -59,13 +41,25 @@ impl<'a, 'd> Pipeline<'a, 'd> {
         }
     }
 
+    /// The pixels of the last rendered frame.
+    pub fn output(&self) -> &[Color] {
+        &self.output
+    }
+
     /// Converts a frame into display pixels in `output`, without writing to the display.
-    fn render(&mut self, frame: &VideoFrame) -> Result<(), PipelineError> {
+    pub fn render(&mut self, frame: &VideoFrame) -> Result<(), PipelineError> {
         // PERF: We allocate buffers once, and set their sizes on the initial frame,
         // then reuse them for the rest of the frames.
         let size = frame.width * frame.height * PIXEL_TYPE.size();
         if self.pixels.len() != size {
             self.pixels.resize(size, 0);
+            log::debug!(
+                "Video frames are {}x{}, scaled to {}x{}",
+                frame.width,
+                frame.height,
+                self.scaled.width(),
+                self.scaled.height()
+            );
         }
 
         self.unpack(frame);
@@ -164,51 +158,5 @@ cfg_if::cfg_if! {
                 [channel(y + self.rv * v), channel(y - self.gu * u - self.gv * v), channel(y + self.bu * u)]
             }
         }
-    }
-}
-
-impl FrameSink for Pipeline<'_, '_> {
-    type Error = PipelineError;
-
-    fn present(&mut self, frame: &VideoFrame) -> Result<(), PipelineError> {
-        self.render(frame)?;
-
-        // Waiting before the blit keeps the time between frames on screen steady
-        self.pacer.wait();
-        self.display.blit(&self.output);
-        Ok(())
-    }
-}
-
-/// Scheduler for frame rendering.
-///
-/// Keeps track of time consumed for decoding and rendering against the frametime
-/// budget and wait times adjusts accordingly in order to not accumulate a time
-/// error across multiple frames.
-struct FramePacer<'a> {
-    timer: &'a ApicTimer,
-    period: u64,
-    deadline: Option<u64>,
-}
-
-impl<'a> FramePacer<'a> {
-    fn new(timer: &'a ApicTimer, tsc_hz: u64, fps: u32) -> Self {
-        Self { timer, period: tsc_hz / u64::from(fps), deadline: None }
-    }
-
-    /// Blocks until the current frame's deadline, then schedules the next one.
-    fn wait(&mut self) {
-        let now = TSC.now();
-        let deadline = *self.deadline.get_or_insert(now);
-
-        if let Some(remaining) = deadline.checked_sub(now).and_then(|ticks| TSC.to_duration(ticks))
-        {
-            let millis = remaining.as_secs() * 1000 + u64::from(remaining.subsec_millis());
-            self.timer.delay(millis as u32);
-            // TODO: use APIC TSC timer mode.
-        }
-
-        // When more than a frame behind, resync instead of trying to catch up.
-        self.deadline = Some(deadline.max(now.saturating_sub(self.period)) + self.period);
     }
 }

@@ -13,6 +13,13 @@ use crate::tsc::TSC;
 const COM1: u16 = 0x3F8;
 const DEFAULT_BAUD_RATE: BaudRate = BaudRate::Baud115200;
 
+#[rustfmt::skip]
+const DEFAULT_LEVEL: LevelFilter = if cfg!(debug_assertions) {
+    LevelFilter::Debug
+} else {
+    LevelFilter::Info
+};
+
 /// The global serial console instance.
 pub static CONSOLE: SerialConsole = SerialConsole::new();
 
@@ -29,7 +36,9 @@ impl SerialConsole {
     /// boot services.
     ///
     /// If an error is experienced during this process, logging is disabled.
-    pub fn init(&'static self, level: LevelFilter) {
+    ///
+    /// The log level can be set at build time by setting `EFI_LOG` or `RUST_LOG`.
+    pub fn init(&'static self) {
         // While the boot services are present, the firmware has its own console driver which
         // also shares the same COM1 port. It is possible for one of its callbacks to consume
         // the loopback bytes sent during the self-test, which would cause a hang as there is
@@ -40,7 +49,8 @@ impl SerialConsole {
 
         // SAFETY: COM1 is a standard port address
         let mut uart = unsafe { Uart16550::new_port(COM1) }.expect("COM1 is a valid port address");
-        let baud_rate = match uart.dll_dlm() {
+        let divisor = uart.dll_dlm();
+        let baud_rate = match divisor {
             // If the firmware already programs UART, we read and establish that as our baud
             // rate. If not, we program it with our own baud rate
             (0, 0) => DEFAULT_BAUD_RATE,
@@ -58,8 +68,18 @@ impl SerialConsole {
         *self.uart.lock() = present.then(|| Uart16550Tty::from_inner(uart));
 
         if log::set_logger(self).is_ok() {
-            log::set_max_level(level);
+            log::set_max_level(
+                // Allow setting a build-time max log level. In release builds, this is capped
+                // to info.
+                [option_env!("EFI_LOG"), option_env!("RUST_LOG")]
+                    .into_iter()
+                    .find_map(|env| env?.parse().ok())
+                    .unwrap_or(DEFAULT_LEVEL),
+            );
         }
+
+        let source = if divisor == (0, 0) { "default" } else { "set by firmware" };
+        log::debug!("COM1 running at {} baud ({source})", baud_rate.to_integer());
 
         if let Some(Err(err)) = loopback {
             log::warn!("COM1 self-test failed ({err}), logs may not be reliable");

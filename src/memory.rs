@@ -29,13 +29,17 @@ impl UefiAllocatorManager {
     /// - The global allocator will be initialized and ready for use
     pub unsafe fn init() -> MemoryRegion<MemoryMapOwned> {
         let mmap = exit_boot_services(None);
+        log::debug!("Exited boot services");
         let region = Self::find_memory_region(mmap).expect("No usable memory found in memory map");
 
         ALLOCATOR.lock().init(region.start as *mut u8, region.size);
+        log::info!("Heap: {} MiB", region.size >> 20);
+        log::debug!("Heap at {:#x}..{:#x} ({:?})", region.start, region.end(), region.memory_type);
 
         // Interrupts
         GDT.load();
         IDT.load();
+        log::debug!("Loaded the GDT and IDT");
 
         region
     }
