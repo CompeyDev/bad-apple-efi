@@ -8,6 +8,8 @@ use xshell::{cmd, Shell};
 const VIDEO_SOURCES: [&str; 2] = ["bin/bad_apple.webm", "bin/bad_apple.mp4"];
 const VP9_ENCODE_ARGS: [&str; 10] =
     ["-c:v", "libvpx-vp9", "-crf", "37", "-b:v", "0", "-cpu-used", "2", "-row-mt", "1"];
+// Opus always decodes at 48 kHz, which HDA plays without resampling
+const OPUS_ENCODE_ARGS: [&str; 6] = ["-c:a", "libopus", "-b:a", "128k", "-ar", "48000"];
 
 const SUPPORTED_PIX_FMTS: [&str; 5] = ["yuv420p", "yuv422p", "yuv440p", "yuv444p", "gbrp"];
 
@@ -90,30 +92,31 @@ fn convert_video(out_dir: &Path) -> Result {
     let key = BuildHasherDefault::<DefaultHasher>::new().hash_one((
         fs::read(source)?,
         VP9_ENCODE_ARGS,
+        OPUS_ENCODE_ARGS,
         SUPPORTED_PIX_FMTS,
     ));
 
     let cache_dir = // out dir is usually `<target>/<build-type>/build/<pkg>-<hash>`
         out_dir.ancestors().nth(3).ok_or("unexpected OUT_DIR layout")?.join("video-cache");
 
-    let cached = cache_dir.join(format!("{key:016x}.ivf"));
+    let cached = cache_dir.join(format!("{key:016x}.webm"));
     if !cached.exists() {
         fs::create_dir_all(&cache_dir)?;
 
         // Write to a temporary file first, so an interrupt leaves a partial encode as a cache
-        let partial = cached.with_extension("ivf.partial");
+        let partial = cached.with_extension("webm.partial");
         transcode(source, &partial)?;
         fs::rename(&partial, &cached)?;
     }
 
-    // Validate the produced file
-    let mut header = [0; 12];
+    // Validate the produced file, the DocType sits within the first few bytes of the EBML header
+    let mut header = [0; 40];
     fs::File::open(&cached)?.read_exact(&mut header)?;
-    if &header[..4] != b"DKIF" || &header[8..] != b"VP90" {
-        return Err("ffmpeg output is not a VP9 IVF file".into());
+    if header[..4] != [0x1A, 0x45, 0xDF, 0xA3] || !header.windows(4).any(|w| w == b"webm") {
+        return Err("ffmpeg output is not a WebM file".into());
     }
 
-    fs::copy(&cached, out_dir.join("bad_apple.ivf"))?;
+    fs::copy(&cached, out_dir.join("bad_apple.webm"))?;
     Ok(())
 }
 
@@ -127,7 +130,7 @@ fn transcode(source: &str, output: &Path) -> Result {
     let (codec, pix_fmt) = probe.split_once(',').ok_or("ffprobe found no video stream")?;
     let supported = SUPPORTED_PIX_FMTS.contains(&pix_fmt);
 
-    let codec_args = if codec == "vp9" && supported {
+    let video_args = if codec == "vp9" && supported {
         vec!["-c:v", "copy"]
     } else {
         // Keep the chroma layout when the decoder supports it, otherwise fall back to 4:2:0
@@ -135,8 +138,21 @@ fn transcode(source: &str, output: &Path) -> Result {
         [&VP9_ENCODE_ARGS[..], &["-pix_fmt", pix_fmt]].concat()
     };
 
-    cmd!(sh, "ffmpeg -hide_banner -loglevel error -i {source} -map 0:v:0 -an {codec_args...}")
-        .args(["-f", "ivf", "-y"])
+    let probe = cmd!(sh, "ffprobe -v error -select_streams a:0")
+        .args(["-show_entries", "stream=codec_name,sample_rate", "-of", "csv=p=0", source])
+        .quiet()
+        .read()?;
+
+    // The audio track is optional, playback is silent when absent
+    let audio_args = match probe.split_once(',') {
+        None => vec!["-an"],
+        Some(("opus", "48000")) => vec!["-map", "0:a:0", "-c:a", "copy"],
+        Some(_) => [&["-map", "0:a:0"][..], &OPUS_ENCODE_ARGS].concat(),
+    };
+
+    cmd!(sh, "ffmpeg -hide_banner -loglevel error -i {source} -map 0:v:0 {video_args...}")
+        .args(audio_args)
+        .args(["-f", "webm", "-y"])
         .arg(output)
         .run()?;
 

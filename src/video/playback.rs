@@ -1,13 +1,13 @@
 use core::mem;
 
 use crate::video::codec::Vp9Decoder;
-use crate::video::container::{IvfContainer, Packets};
+use crate::video::container::{Packets, Track, WebmContainer};
 use crate::video::{FrameSink, VideoError};
 
 #[derive(Default)]
 enum State {
     Ready {
-        container: IvfContainer,
+        container: WebmContainer,
         decoder: Vp9Decoder,
     },
 
@@ -27,14 +27,12 @@ pub struct VideoPlayer {
 
 impl VideoPlayer {
     pub fn new(data: &'static [u8]) -> Result<Self, VideoError> {
-        let container = IvfContainer::parse(data)?;
+        let container = WebmContainer::parse(data)?;
         let framerate = container.framerate();
-
+        let (width, height) = (container.video().width, container.video().height);
         log::info!(
-            "VideoPlayer: {}x{}, {} frames, {framerate} fps",
-            container.width(),
-            container.height(),
-            container.frame_count(),
+            "VideoPlayer: {width}x{height}, {:.2?}, {framerate} fps",
+            container.duration().unwrap_or_default()
         );
 
         let state = State::Ready { container, decoder: Vp9Decoder::new()? };
@@ -57,15 +55,21 @@ impl VideoPlayer {
             }
 
             State::Playing { mut packets, mut decoder } => match packets.next() {
+                Some(packet) if packet.track == Track::Audio => {
+                    // TODO: decode once there is an Opus decoder
+                    log::trace!("Audio packet at {:?}: {} bytes", packet.pts, packet.data.len());
+                    State::Playing { packets, decoder }
+                }
+
                 Some(packet) => {
-                    log::trace!("Packet at pts {}: {} bytes", packet.pts, packet.data.len());
+                    log::trace!("Packet at {:?}: {} bytes", packet.pts, packet.data.len());
                     decoder.send_packet(packet.data)?;
 
                     if let Some(frame) = decoder.receive_frame() {
                         sink.present(&frame)?;
                     } else {
                         // Hidden VP9 reference frame
-                        log::trace!("Packet at pts {} produced no frame", packet.pts);
+                        log::trace!("Packet at {:?} produced no frame", packet.pts);
                     }
 
                     State::Playing { packets, decoder }

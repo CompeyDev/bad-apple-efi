@@ -11,7 +11,7 @@ pub use playback::VideoPlayer;
 pub enum VideoError {
     #[error("libvpx error {0}")]
     Vpx(c_int),
-    #[error("invalid IVF: {0}")]
+    #[error("invalid container: {0}")]
     InvalidFormat(&'static str),
 }
 
