@@ -50,17 +50,8 @@ impl<'a> Display<'a> {
     /// - If called after exiting boot services, this will return a UEFI error.
     /// - If no display modes are available, this will return a `NoDisplayModes` error.
     pub fn open() -> Result<Display<'a>, DisplayError> {
-        macro_rules! protected_uefi {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(val) => val,
-                    Err(e) => return Err(DisplayError::Uefi(e)),
-                }
-            };
-        }
-
-        let gop_handle = protected_uefi!(boot::get_handle_for_protocol::<GraphicsOutput>());
-        let mut gop = protected_uefi!(boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle));
+        let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>()?;
+        let mut gop = boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle)?;
 
         // TODO: Better scaling to use proper screen real-estate
         let mode_count = gop.modes().count();
@@ -71,7 +62,7 @@ impl<'a> Display<'a> {
 
         let (width, height) = mode.info().resolution();
         let stride = mode.info().stride();
-        protected_uefi!(gop.set_mode(&mode));
+        gop.set_mode(&mode)?;
 
         let mut framebuffer = gop.frame_buffer();
         let (base, len) = (framebuffer.as_mut_ptr() as *mut u32, framebuffer.size() / 4);
