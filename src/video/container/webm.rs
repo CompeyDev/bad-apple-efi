@@ -8,6 +8,9 @@
 
 use core::time::Duration;
 
+use zerocopy::big_endian::I16;
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
+
 use self::ebml::{children, element, element_with_id, float, uint, vint, vint_data};
 use crate::video::container::{AudioTrack, Packet, Track, VideoTrack};
 use crate::video::VideoError;
@@ -305,6 +308,15 @@ pub struct Packets {
     audio: Option<u64>,
 }
 
+/// The fixed-size part of a block's header, which follows its track number.
+#[derive(FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct BlockHeader {
+    /// Timestamp relative to the cluster's, in [`id::TIMESTAMP_SCALE`] ticks.
+    timestamp: I16,
+    flags: u8,
+}
+
 impl Packets {
     /// Parses a `SimpleBlock` or `Block` which contains the track number, a timestamp relavtive
     /// to the cluster and the packet's data.
@@ -319,10 +331,8 @@ impl Packets {
             _ => return None,
         };
 
-        let (header, data) = body[number.1..].split_at_checked(3)?;
-        let &[high, low, flags] = header else { return None };
-
-        if flags & LACING != 0 {
+        let (header, data) = BlockHeader::ref_from_prefix(&body[number.1..]).ok()?;
+        if header.flags & LACING != 0 {
             // TODO: add support for laced blocks. so far, ffmpeg hasnt produced any
             log::warn!("Skipping a laced block, which is unsupported");
             return None;
@@ -332,7 +342,7 @@ impl Packets {
         // Offsets are signed, so a block may sit slightly before its cluster. Only a block before the
         // start of the file would go negative, which ffmpeg never writes since it stores the Opus
         // pre-skip in `CodecDelay` instead, so this just saturates at zero
-        let ticks = self.cluster_time.saturating_add_signed(i16::from_be_bytes([high, low]).into());
+        let ticks = self.cluster_time.saturating_add_signed(header.timestamp.get().into());
         let pts = Duration::from_nanos(ticks.saturating_mul(self.scale));
         Some(Packet { track, pts, data })
     }
