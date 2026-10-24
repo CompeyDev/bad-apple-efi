@@ -2,7 +2,8 @@ use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::asm::*;
+use x86_64::instructions::interrupts;
+use x86_64::instructions::port::Port;
 
 /// The global Interrupt Descriptor Table.
 pub static IDT: Idt = Idt::new();
@@ -119,7 +120,7 @@ impl InterruptSemaphore {
     pub fn wait(&self) {
         unsafe {
             // Check with interrupts disabled, so one can't fire between checking and halting
-            cli();
+            interrupts::disable();
 
             // Halt execution until an interrupt is received
             while !self.completed.load(Ordering::SeqCst) {
@@ -131,7 +132,7 @@ impl InterruptSemaphore {
                 //
                 // `nomem` is not enabled, interrupt handlers may write to memory while halted.
                 asm!("sti", "hlt", options(nostack, preserves_flags));
-                cli();
+                interrupts::disable();
             }
         }
     }
@@ -158,25 +159,31 @@ impl InterruptSemaphore {
 //
 
 /// Initialize the PIC and mask all IRQs for safe APIC operation.
+#[rustfmt::skip]
 pub unsafe fn init_pic() {
+    let mut master_command = Port::<u8>::new(0x20);
+    let mut master_data = Port::<u8>::new(0x21);
+    let mut slave_command = Port::<u8>::new(0xA0);
+    let mut slave_data = Port::<u8>::new(0xA1);
+
     // ICW1: initialize
-    outb(0x20, 0x11); // master: init + ICW4 expected
-    outb(0xA0, 0x11); // slave:  init + ICW4 expected
+    master_command.write(0x11); // master: init + ICW4 expected
+    slave_command.write(0x11);  // slave:  init + ICW4 expected
 
     // ICW2: vector offsets
-    outb(0x21, 0x20); // master: IRQ[0-7]  = vectors 20h-27h
-    outb(0xA1, 0x28); // slave:  IRQ[8-15] = vectors 28h-2Fh
+    master_data.write(0x20);    // master: IRQ[0-7]  = vectors 20h-27h
+    slave_data.write(0x28);     // slave:  IRQ[8-15] = vectors 28h-2Fh
 
     // ICW3: cascade
-    outb(0x21, 0x04); // master: slave on IRQ2
-    outb(0xA1, 0x02); // slave:  casade ID 2
+    master_data.write(0x04);    // master: slave on IRQ2
+    slave_data.write(0x02);     // slave:  casade ID 2
 
     // ICW4: set both master and slave modes to 8086
-    outb(0x21, 0x01); // master
-    outb(0xA1, 0x01); // slave
+    master_data.write(0x01);    // master
+    slave_data.write(0x01);     // slave
 
     // Mask all IRQs
-    outb(0x21, 0xFF); // master
-    outb(0xA1, 0xFF); // slave
-    outb(0x20, 0x60); // send EOI to all pending IRQs
+    master_data.write(0xFF);    // master
+    slave_data.write(0xFF);     // slave
+    master_command.write(0x60); // send EOI to all pending IRQs
 }

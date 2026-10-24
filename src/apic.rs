@@ -1,7 +1,9 @@
+use core::arch::x86_64::_mm_mfence;
 use core::arch::{asm, naked_asm};
 use core::time::Duration;
 
-use crate::asm::*;
+use x86_64::instructions::interrupts;
+
 use crate::interrupts::{InterruptSemaphore, IDT};
 use crate::tsc::TSC;
 
@@ -125,12 +127,12 @@ impl ApicTimer {
 
         unsafe {
             // Disable interrupts during calibration for accurate measurement
-            cli();
+            interrupts::disable();
 
             // Mask timer during calibration (bit 16 set), one-shot mode (bits hi 18 and lo 17 unset)
             Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED | (Self::TIMER_VECTOR as u32));
             Self::lapic_icr().write_volatile(0xFFFFFFFF); // initial count
-            mfence();
+            _mm_mfence();
 
             let ccr_initial = Self::lapic_ccr().read_volatile();
             let tsc_start = TSC.now();
@@ -147,7 +149,7 @@ impl ApicTimer {
             let ccr_final = Self::lapic_ccr().read_volatile();
 
             // Re-enable interrupts after calibration
-            sti();
+            interrupts::enable();
 
             let apic_count = (ccr_initial - ccr_final) as u64; // timer counts downwards
             let per_second = 1000 / CALIBRATION_MS;

@@ -20,7 +20,6 @@ use crate::tsc::{Tsc, TSC};
 use crate::video::VideoPlayer;
 
 mod apic;
-mod asm;
 mod cpu_features;
 mod display;
 mod interrupts;

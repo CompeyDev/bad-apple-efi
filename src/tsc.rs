@@ -1,11 +1,13 @@
 use core::arch::naked_asm;
-use core::arch::x86_64::__cpuid;
+use core::arch::x86_64::{__cpuid, _rdtsc};
 use core::fmt::{self, Formatter};
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 
-use crate::asm::{cli, inb, outb, rdtsc};
+use x86_64::instructions::interrupts;
+use x86_64::instructions::port::Port;
+
 use crate::interrupts::{InterruptSemaphore, IDT};
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
@@ -34,7 +36,7 @@ impl Tsc {
     #[inline(always)]
     pub fn now(&self) -> u64 {
         // SAFETY: rdtsc is available on every x86_64 CPU
-        unsafe { rdtsc() }
+        unsafe { _rdtsc() }
     }
 
     /// The frequency in Hz, or `None` if not calibrated.
@@ -81,18 +83,23 @@ impl Tsc {
         // Reset existing calibration results
         PIT_MEASUREMENT.reset();
 
+        let mut pic_command = Port::<u8>::new(0x20);
+        let mut pic_data = Port::<u8>::new(0x21);
+        let mut pit_channel0 = Port::<u8>::new(0x40);
+        let mut pit_command = Port::<u8>::new(0x43);
+
         let hz = unsafe {
             // Disable interrupts during calibration and register our capture handler
-            cli();
+            interrupts::disable();
             PitMeasurement::register_capture_handler();
 
             // Read current PIC mask and ensure IRQ0 is masked during PIT programming
-            let master_mask = inb(0x21);
+            let master_mask = pic_data.read();
 
             // Program PIT on channel 0
-            outb(0x21, master_mask | 0x01);                // mask IRQ0
-            outb(0x43, 0x30);                              // channel 0, LSB then MSB, mode 0, binary
-            outb(0x20, 0x20);                              // send EOI to existing interrupts
+            pic_data.write(master_mask | 0x01);            // mask IRQ0
+            pit_command.write(0x30);                       // channel 0, LSB then MSB, mode 0, binary
+            pic_command.write(0x20);                       // send EOI to existing interrupts
 
             // NOTE:
             // The firmware programs PIT in periodic mode. One of those ticks may have been left
@@ -101,24 +108,24 @@ impl Tsc {
             // programming and measurement.
             
             // Ask the master controller whether IRQ0 is pending by OCW3 command (the IRR)
-            if { outb(0x20, 0x0A); inb(0x20) & 0x01 } != 0 {
+            if { pic_command.write(0x0A); pic_command.read() & 0x01 } != 0 {
                 // If the timer is pending, let it fire, and clear it
-                outb(0x21, master_mask & 0xFE); // unmask
+                pic_data.write(master_mask & 0xFE);         // unmask
                 PIT_MEASUREMENT.wait_for_capture();         // wait for interrupt
-                outb(0x21, master_mask | 0x01); // mask again
+                pic_data.write(master_mask | 0x01);         // mask again
                 PIT_MEASUREMENT.reset();                    // throw the result away
             }
 
-            outb(0x40, (PIT_DIVISOR & 0xFF) as u8);        // divisor LSB
-            outb(0x40, ((PIT_DIVISOR >> 8) & 0xFF) as u8); // divisor MSB
+            pit_channel0.write((PIT_DIVISOR & 0xFF) as u8);        // divisor LSB
+            pit_channel0.write(((PIT_DIVISOR >> 8) & 0xFF) as u8); // divisor MSB
 
             // Capture TSC start
             let tsc_start = self.now();
-            outb(0x21, master_mask & 0xFE); // unmask bit 0 to start timer
+            pic_data.write(master_mask & 0xFE); // unmask bit 0 to start timer
 
             // Enable interrupts and wait for PIT
             PIT_MEASUREMENT.wait_for_capture();
-            outb(0x21, master_mask | 0x01); // mask timer again
+            pic_data.write(master_mask | 0x01); // mask timer again
 
             // Read captured TSC and calculate tick rate in Hz
             let tsc_end = PIT_MEASUREMENT.ticks();
