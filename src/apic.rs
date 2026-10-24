@@ -91,23 +91,6 @@ impl ApicTimer {
         (*LAPIC_BASE + 0x390) as *mut u32
     }
 
-    /// Initialize the APIC timer with the specified frequency and divisor.
-    ///
-    /// The divisor determines the timer frequency. The divisor must be a power
-    /// of two from 1 to 128 (i.e., 1, 2, 4, 8, 16, 32, 64, or 128). For high
-    /// precision, 16 is commonly used.
-    pub fn init(frequency: u32, divisor: u32) -> Self {
-        // Enable APIC with spurious interrupt vector
-        unsafe {
-            Self::lapic_svr().write_volatile(Self::APIC_SW_ENABLE | Self::SPURIOUS_VECTOR);
-            Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED);
-            Self::lapic_eoi().write_volatile(0);
-        }
-
-        Self::set_divisor(divisor);
-        ApicTimer { frequency, divisor }
-    }
-
     /// Calibrate and initialize the APIC timer by measuring its actual frequency.
     ///
     /// This function uses the PIT (Programmable Interval Timer) to measure the
@@ -117,6 +100,7 @@ impl ApicTimer {
     /// of two from 1 to 128 (i.e., 1, 2, 4, 8, 16, 32, 64, or 128). For high
     /// precision, 16 is commonly used.
     pub fn calibrate(divisor: u32) -> Self {
+        // Enable APIC with spurious interrupt vector
         unsafe {
             Self::lapic_svr().write_volatile(Self::APIC_SW_ENABLE | Self::SPURIOUS_VECTOR);
             Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED);
