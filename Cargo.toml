@@ -27,6 +27,7 @@ split-debuginfo = "packed"  # Generates a separate *.dwp/*.dSYM so the binary ca
 [profile.dev]
 codegen-units = 16          # We force enable AVX for rustc flags, LLVM parallelism would cause OOM 
 incremental = false         # ^ Same reason as above ^
+opt-level = 1               # Per-pixel rendering is too slow for 60 fps unoptimized
 
 [dependencies]
 uefi = "0.36.1"
