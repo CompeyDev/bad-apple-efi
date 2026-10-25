@@ -43,7 +43,11 @@ uart_16550 = "0.9"
 log = { version = "0.4", features = ["release_max_level_info"] }
 owo-colors = "4"
 x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
+pci_types = "0.10"
+ffi-opaque = "2"
 
 [build-dependencies]
 autotools = "0.2"
+cc = "1"
+diffy = "0.5"
 xshell = "0.2"

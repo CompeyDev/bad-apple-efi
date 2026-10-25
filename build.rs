@@ -28,6 +28,11 @@ const VPX_DISABLED_FEATURES: [&str; 10] = [
     "docs",
 ];
 
+const UHDA_SRC_DIR: &str = "vendor/uHDA";
+const UHDA_PATCHES_DIR: &str = "vendor/patches/uHDA";
+const UHDA_SOURCES: [&str; 5] =
+    ["uhda.cpp", "controller.cpp", "codec.cpp", "stream.cpp", "simple.cpp"];
+
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result {
@@ -36,6 +41,7 @@ fn main() -> Result {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     build_libvpx(&out_dir)?;
+    build_uhda(&out_dir)?;
     convert_video(&out_dir)?;
 
     Ok(())
@@ -80,6 +86,75 @@ fn build_libvpx(out_dir: &Path) -> Result {
     println!("cargo::rustc-link-search=native={}", dst.join("build").display());
     println!("cargo::rustc-link-lib=static=vpx_g");
     Ok(())
+}
+
+fn build_uhda(out_dir: &Path) -> Result {
+    println!("cargo::rerun-if-changed={UHDA_SRC_DIR}");
+    println!("cargo::rerun-if-changed={UHDA_PATCHES_DIR}");
+
+    // Apply our own patches
+    let patched = patch_uhda(out_dir)?;
+    let source = |path: PathBuf| match patched.join(&path) {
+        patched if patched.exists() => patched,
+        _ => Path::new(UHDA_SRC_DIR).join(path),
+    };
+
+    // Build it!
+    cc::Build::new()
+        .cpp(true)
+        .compiler("clang++")
+        .archiver("llvm-ar")
+        .target("x86_64-pc-windows-msvc")
+        .std("c++20")
+        .files(UHDA_SOURCES.map(|file| source(Path::new("src").join(file))))
+        .includes([patched.join("include"), Path::new(UHDA_SRC_DIR).join("include")])
+        .include(Path::new(UHDA_SRC_DIR).join("src"))
+        .flag("-ffreestanding")
+        .flag("-fno-exceptions")
+        .flag("-fno-rtti")
+        .cpp_link_stdlib(None)
+        .compile("uhda");
+
+    Ok(())
+}
+
+// TODO: make patching universal for all vendored code
+fn patch_uhda(out_dir: &Path) -> Result<PathBuf> {
+    // Start fresh, in case patches were removed, we don't want them applied already
+    let patched = out_dir.join("uhda-patched");
+    if patched.exists() {
+        fs::remove_dir_all(&patched)?;
+    }
+
+    let mut patches = fs::read_dir(UHDA_PATCHES_DIR)?.collect::<std::io::Result<Vec<_>>>()?;
+    patches.sort_by_key(|entry| entry.file_name());
+
+    for path in patches.iter().map(|entry| entry.path()) {
+        let text = fs::read_to_string(&path)?;
+        let patch = diffy::Patch::from_str(&text)
+            .map_err(|err| format!("invalid patch {}: {err}", path.display()))?;
+
+        let target = patch
+            .modified()
+            .and_then(|name| name.strip_prefix("b/"))
+            .ok_or_else(|| format!("{} has no target file", path.display()))?;
+
+        // Later patches to the same file apply on top of the earlier ones
+        let dest = patched.join(target);
+        let source = fs::read_to_string(if dest.exists() {
+            dest.clone()
+        } else {
+            Path::new(UHDA_SRC_DIR).join(target)
+        })?;
+
+        let patched = diffy::apply(&source, &patch)
+            .map_err(|err| format!("{} couldn't apply to uHDA: {err}", path.display()))?;
+
+        fs::create_dir_all(dest.parent().ok_or("patch target has no parent")?)?;
+        fs::write(dest, patched)?;
+    }
+
+    Ok(patched)
 }
 
 fn convert_video(out_dir: &Path) -> Result {

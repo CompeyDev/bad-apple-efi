@@ -13,6 +13,7 @@ use uefi::{boot, table, Handle, Status};
 
 use crate::apic::ApicTimer;
 use crate::display::Display;
+use crate::hda::Hda;
 use crate::memory::UefiAllocatorManager;
 use crate::pipeline::Pipeline;
 use crate::serial::CONSOLE;
@@ -22,6 +23,8 @@ use crate::video::VideoPlayer;
 mod apic;
 mod cpu_features;
 mod display;
+#[allow(unused)]
+mod hda;
 mod interrupts;
 mod libc;
 mod memory;
@@ -78,7 +81,7 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
         xsave = cpu_features::is_xsave_supported()
     );
 
-    // Initialize display, memory, and timers
+    // Initialize display, memory,  timers and audio
     let mut display = Display::open().expect("Failed to open display");
     let _mem_region = unsafe { UefiAllocatorManager::init() };
     let timer = ApicTimer::calibrate(16);
@@ -89,6 +92,8 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
 
     let tsc_hz = TSC.hz().expect("TSC should be calibrated");
     info!("TSC frequency: {} MHz", tsc_hz / 1_000_000);
+
+    let _hda = Hda::init().inspect_err(|err| warn!("Audio is unavailable: {err}")).ok();
 
     display.clear();
 

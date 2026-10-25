@@ -1,5 +1,7 @@
 use core::ffi::{c_char, c_int, c_uint, c_void};
 
+use ffi_opaque::opaque;
+
 use crate::video::VideoError;
 
 const VPX_DECODER_ABI_VERSION: c_int = 3 + 4 /* VPX_CODEC_ABI_VERSION */ + 5 /* VPX_CODEC_ABI_VERSION */;
@@ -78,10 +80,9 @@ pub struct VpxCodecCtx {
     priv_: *mut c_void,
 }
 
-/// `vpx_codec_iface_t`, only ever handed by pointer.
-#[repr(C)]
-pub struct VpxCodecIface {
-    _private: [u8; 0],
+opaque! {
+    /// `vpx_codec_iface_t`, only ever handed by pointer.
+    pub struct VpxCodecIface;
 }
 
 /// `vpx_codec_dec_cfg_t`
