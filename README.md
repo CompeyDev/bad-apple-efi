@@ -2,10 +2,6 @@
 
 The [bad apple video](https://youtu.be/FtutLA63Cp8) but bootable, powered by 🦀
 
-> [!NOTE]  
-> The EFI application does not currently play audio. Audio support is planned. Open a
-> [Pull Request](https://github.com/CompeyDev/bad-apple-efi/pulls) if you have a method in mind!
-
 <details>
   <summary>Preview</summary>
 
