@@ -61,6 +61,7 @@ impl fmt::Display for UhdaOutputType {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct UhdaColor(pub c_int);
 
+#[allow(unused)] // the whole C enum including variants we don't use yet
 impl UhdaColor {
     pub const UNKNOWN: Self = Self(0);
     pub const BLACK: Self = Self(1);
@@ -169,6 +170,7 @@ extern "C" {
     pub fn uhda_path_mute(path: *mut UhdaPath, mute: bool) -> UhdaStatus;
 
     pub fn uhda_stream_shutdown(stream: *mut UhdaStream) -> UhdaStatus;
+    pub fn uhda_stream_get_position(stream: *const UhdaStream) -> u32;
 
     pub fn uhda_simple_stream_new(
         base: *mut UhdaStream,

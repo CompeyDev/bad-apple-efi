@@ -1,6 +1,11 @@
-use core::{mem, ptr, slice};
+use core::ffi::c_int;
+use core::ptr::{self, NonNull};
+use core::time::Duration;
+use core::{mem, slice};
 
-use super::bindings::*;
+use super::bindings::opus::*;
+use super::bindings::vpx::*;
+use crate::video::container::Packet;
 #[cfg(feature = "high_res")]
 use crate::video::{ColorMatrix, ColorRange, Colorimetry};
 use crate::video::{Plane, VideoError, VideoFrame};
@@ -8,6 +13,7 @@ use crate::video::{Plane, VideoError, VideoFrame};
 /// A singlethreaded libvpx VP9 decoder.
 pub struct Vp9Decoder {
     ctx: VpxCodecCtx,
+    pts: Duration, // timestamp of the last packet sent
 }
 
 impl Vp9Decoder {
@@ -17,15 +23,16 @@ impl Vp9Decoder {
         unsafe { vpx_codec_dec_init(&mut ctx, vpx_codec_vp9_dx(), &cfg, 0) }.ok()?;
 
         log::debug!("VP9 decoder initialized");
-        Ok(Self { ctx })
+        Ok(Self { ctx, pts: Duration::ZERO })
     }
 
     /// Decodes one compressed packet.
     ///
     /// Use [`Self::receive_frame`] to get the frame after calling this method.
-    pub fn send_packet(&mut self, packet: &[u8]) -> Result<(), VideoError> {
-        let len = packet.len() as u32;
-        unsafe { vpx_codec_decode(&mut self.ctx, packet.as_ptr(), len, ptr::null_mut(), 0) }.ok()
+    pub fn send_packet(&mut self, packet: &Packet) -> Result<(), VideoError> {
+        let (data, len) = (packet.data.as_ptr(), packet.data.len() as u32);
+        self.pts = packet.pts;
+        unsafe { vpx_codec_decode(&mut self.ctx, data, len, ptr::null_mut(), 0) }.ok()
     }
 
     /// Copies out the most recently decoded frame, if successfully produced.
@@ -46,6 +53,7 @@ impl Vp9Decoder {
         let (chroma_w, chroma_h) = ((width + (1 << xs) - 1) >> xs, (height + (1 << ys) - 1) >> ys);
 
         Some(VideoFrame {
+            pts: self.pts,
             width,
             height,
             y: plane(0, width, height),
@@ -88,5 +96,47 @@ impl From<VpxColorRange> for ColorRange {
 impl Drop for Vp9Decoder {
     fn drop(&mut self) {
         let _ = unsafe { vpx_codec_destroy(&mut self.ctx) };
+    }
+}
+
+/// A libopus decoder, producing interleaved 16-bit samples at 48 kHz.
+pub struct OpusDecoder {
+    state: NonNull<OpusDecoderState>,
+    channels: usize,
+}
+
+impl OpusDecoder {
+    pub const SAMPLE_RATE: u32 = 48_000;
+    pub const MAX_FRAME_SIZE: usize = 5760;
+
+    /// Creates a decoder which mixes the track to `channels`.
+    pub fn new(channels: u8) -> Result<Self, VideoError> {
+        let mut error = 0;
+        let rate = Self::SAMPLE_RATE as i32;
+        let state = unsafe { opus_decoder_create(rate, channels.into(), &mut error) };
+        let state = NonNull::new(state).ok_or(VideoError::Opus(error))?;
+
+        log::debug!("Opus decoder initialized");
+        Ok(Self { state, channels: channels.into() })
+    }
+
+    /// Decodes one compressed packet into `pcm`, returning how many samples per channel
+    /// were written.
+    ///
+    /// Errors when `pcm` is larger than [`Self::MAX_FRAME_SIZE`].
+    pub fn decode(&mut self, packet: &[u8], pcm: &mut [i16]) -> Result<usize, VideoError> {
+        let (data, len) = (packet.as_ptr(), packet.len() as i32);
+        let frame_size = (pcm.len() / self.channels) as c_int;
+
+        let decoded =
+            unsafe { opus_decode(self.state.as_ptr(), data, len, pcm.as_mut_ptr(), frame_size, 0) };
+
+        usize::try_from(decoded).map_err(|_| VideoError::Opus(decoded))
+    }
+}
+
+impl Drop for OpusDecoder {
+    fn drop(&mut self) {
+        unsafe { opus_decoder_destroy(self.state.as_ptr()) };
     }
 }

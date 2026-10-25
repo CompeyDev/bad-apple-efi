@@ -17,6 +17,7 @@ pub struct VideoTrack {
 pub struct AudioTrack {
     pub sample_rate: u32,
     pub channels: u8,
+    pub codec_delay: Duration, // opus pre-skip
 }
 
 /// Which track a packet belongs to.
@@ -28,7 +29,7 @@ pub enum Track {
 
 /// One compressed frame of a track.
 pub struct Packet {
-    pub track: Track,
     pub pts: Duration,
     pub data: &'static [u8],
+    pub discard: Duration, // opus end trimming
 }

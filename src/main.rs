@@ -15,15 +15,14 @@ use crate::apic::ApicTimer;
 use crate::display::Display;
 use crate::hda::Hda;
 use crate::memory::UefiAllocatorManager;
-use crate::pipeline::Pipeline;
+use crate::pipeline::{AudioOutput, Pipeline};
 use crate::serial::CONSOLE;
 use crate::tsc::{Tsc, TSC};
-use crate::video::VideoPlayer;
+use crate::video::{VideoPlayer, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 
 mod apic;
 mod cpu_features;
 mod display;
-#[allow(unused)]
 mod hda;
 mod interrupts;
 mod libc;
@@ -93,15 +92,23 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
     let tsc_hz = TSC.hz().expect("TSC should be calibrated");
     info!("TSC frequency: {} MHz", tsc_hz / 1_000_000);
 
-    let _hda = Hda::init().inspect_err(|err| warn!("Audio is unavailable: {err}")).ok();
+    let hda = Hda::init().inspect_err(|err| warn!("Audio is unavailable: {err}")).ok();
 
     display.clear();
 
     let mut player = VideoPlayer::new(VIDEO_DATA).expect("Failed to open video");
-    let mut pipeline = Pipeline::new(&mut display, &timer, tsc_hz, player.framerate());
+    let audio = hda.as_ref().filter(|_| player.has_audio()).and_then(|hda| {
+        let stream = hda.open_stream(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS.into());
+        let stream = stream.inspect_err(|err| warn!("Audio is unavailable: {err}")).ok()?;
+        Some(AudioOutput::new(hda, stream))
+    });
+
+    let mut pipeline = Pipeline::new(&mut display, audio, &timer, tsc_hz, player.framerate());
 
     let start = TSC.now();
     player.play(&mut pipeline).expect("Playback failed");
+    pipeline.finish();
+
     if let Some(time) = TSC.to_duration(TSC.now() - start) {
         info!("Playback finished in {time:.2?}");
     }

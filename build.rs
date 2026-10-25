@@ -33,6 +33,13 @@ const UHDA_PATCHES_DIR: &str = "vendor/patches/uHDA";
 const UHDA_SOURCES: [&str; 5] =
     ["uhda.cpp", "controller.cpp", "codec.cpp", "stream.cpp", "simple.cpp"];
 
+const OPUS_SRC_DIR: &str = "vendor/opus";
+const OPUS_SOURCE_LISTS: [(&str, &str); 3] = [
+    ("celt_sources.mk", "CELT_SOURCES"),
+    ("silk_sources.mk", "SILK_SOURCES"),
+    ("opus_sources.mk", "OPUS_SOURCES"),
+];
+
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result {
@@ -42,6 +49,7 @@ fn main() -> Result {
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     build_libvpx(&out_dir)?;
     build_uhda(&out_dir)?;
+    build_opus()?;
     convert_video(&out_dir)?;
 
     Ok(())
@@ -114,6 +122,46 @@ fn build_uhda(out_dir: &Path) -> Result {
         .flag("-fno-rtti")
         .cpp_link_stdlib(None)
         .compile("uhda");
+
+    Ok(())
+}
+
+fn build_opus() -> Result {
+    println!("cargo::rerun-if-changed={OPUS_SRC_DIR}");
+
+    let mut sources = Vec::new();
+    for (makefile, list) in OPUS_SOURCE_LISTS {
+        // Lists look like `NAME = \` followed by a file per line, until a blank line
+        let text = fs::read_to_string(Path::new(OPUS_SRC_DIR).join(makefile))?;
+        let files = text
+            .lines()
+            .skip_while(|line| line.split_once('=').is_none_or(|(name, _)| name.trim() != list))
+            .skip(1)
+            .map(|line| line.trim_end_matches('\\').trim())
+            .take_while(|file| !file.is_empty());
+
+        sources.extend(files.map(|file| Path::new(OPUS_SRC_DIR).join(file)));
+    }
+
+    // Build it!
+    let opus = Path::new(OPUS_SRC_DIR);
+    cc::Build::new()
+        .compiler("clang")
+        .archiver("llvm-ar")
+        .target("x86_64-pc-windows-msvc")
+        .files(sources)
+        .include(FREESTANDING_DIR)
+        .includes(["include", "celt", "silk", "silk/fixed"].map(|dir| opus.join(dir)))
+        .define("OPUS_BUILD", None)
+        .define("FIXED_POINT", None)
+        .define("DISABLE_FLOAT_API", None)
+        .define("VAR_ARRAYS", None)
+        .define("NO_ASSERTS", None) // SILK would use MSVC's debug asserts otherwise
+        .flag("-ffreestanding")
+        .flag("-mavx2")
+        .flag("-mfma")
+        .warnings(false)
+        .compile("opus");
 
     Ok(())
 }

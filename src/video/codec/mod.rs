@@ -1,4 +1,4 @@
 mod bindings;
 mod decoder;
 
-pub use decoder::Vp9Decoder;
+pub use decoder::{OpusDecoder, Vp9Decoder};

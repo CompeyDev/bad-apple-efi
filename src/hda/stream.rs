@@ -8,6 +8,8 @@ use crate::hda::{Hda, HdaError};
 
 /// Size of the software queue that feeds the hardware buffer. uHDA rounds this value to whole pages.
 const QUEUE_SIZE: u32 = 0x10000;
+/// Size of the hardware buffer. uHDA splits this into 256 pages.
+const BUFFER_SIZE: u32 = 256 * 0x1000;
 
 /// Plays interleaved 16-bit PCM samples through one of the controller's outputs.
 ///
@@ -17,6 +19,11 @@ pub struct Stream<'a> {
     base: NonNull<UhdaStream>,
     path: NonNull<UhdaPath>,
     inner: NonNull<UhdaSimpleStream>,
+
+    /// Number of bytes read by the hardware in total.
+    played: u64,
+    /// The position of the current byte in the buffer.
+    position: u32,
 }
 
 impl<'a> Stream<'a> {
@@ -49,6 +56,8 @@ impl<'a> Stream<'a> {
             base: NonNull::new(base).expect("uHDA output streams can't be null"),
             path: NonNull::new(path).expect("uHDA should return a path on success"),
             inner: NonNull::new(inner).expect("uHDA should return a stream on success"),
+            played: 0,
+            position: 0,
         };
 
         let params = UhdaSimpleStreamParams {
@@ -86,6 +95,18 @@ impl<'a> Stream<'a> {
         let mut remaining = 0;
         let _ = unsafe { uhda_simple_stream_get_remaining(self.inner.as_ptr(), &mut remaining) };
         remaining as usize / 2
+    }
+
+    /// The number of samples the hardware has played so far.
+    ///
+    /// Must be called before the hardware loops around its buffer more than once, which is
+    /// every 5.4s for 48KHz 16-bit stereo audio.
+    pub fn played(&mut self) -> u64 {
+        let position = unsafe { uhda_stream_get_position(self.base.as_ptr()) };
+        self.played += u64::from((position + BUFFER_SIZE - self.position) % BUFFER_SIZE);
+        self.position = position;
+
+        self.played / 2
     }
 
     /// Starts or pauses playback.

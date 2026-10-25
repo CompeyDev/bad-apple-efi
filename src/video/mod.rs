@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use core::ffi::c_int;
+use core::time::Duration;
 
 mod codec;
 mod container;
@@ -11,6 +12,8 @@ pub use playback::VideoPlayer;
 pub enum VideoError {
     #[error("libvpx error {0}")]
     Vpx(c_int),
+    #[error("libopus error {0}")]
+    Opus(c_int),
     #[error("invalid container: {0}")]
     InvalidFormat(&'static str),
 }
@@ -22,9 +25,25 @@ pub trait FrameSink {
     fn present(&mut self, frame: &VideoFrame) -> Result<(), Self::Error>;
 }
 
+/// Sample rate of the audio handed to an [`AudioSink`].
+pub const AUDIO_SAMPLE_RATE: u32 = codec::OpusDecoder::SAMPLE_RATE;
+/// Channels of the audio handed to an [`AudioSink`], mono tracks are mixed up to stereo.
+pub const AUDIO_CHANNELS: u8 = 2;
+
+/// Something which plays the decoded audio, usually a sound card.
+///
+/// Samples are 16-bit interleaved, in [`AUDIO_SAMPLE_RATE`] and [`AUDIO_CHANNELS`]. The first
+/// sample lines up with the first frame.
+pub trait AudioSink {
+    /// Queues as many of the samples as there is room for, returning how many were queued.
+    fn queue(&mut self, samples: &[i16]) -> usize;
+}
+
 /// A decoded YUV frame. Chroma is only optionally available when the `high_res`
 /// feature is enabled.
 pub struct VideoFrame {
+    /// When the frame should be shown, relative to the start of playback.
+    pub pts: Duration,
     pub width: usize,
     pub height: usize,
     pub y: Plane,
