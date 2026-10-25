@@ -148,8 +148,8 @@ impl TaskRunner {
             .args(["-cpu", "max,+invtsc"]) // QEMU hides the host's invariant TSC by default
             .args(["-machine", "q35"])
             .arg("-enable-kvm") // flag
-            .args(["-audiodev", "pa,id=speaker"])
-            .args(["-audiodev", "pa,id=hda0"])
+            .args(["-audiodev", "pipewire,id=speaker"])
+            .args(["-audiodev", "pipewire,id=hda0"])
             .args(["-machine", "pcspk-audiodev=speaker"])
             .args(["-device", "intel-hda"])
             .args(["-device", "hda-output,audiodev=hda0"])
@@ -158,7 +158,7 @@ impl TaskRunner {
             .args(["-m", "512M"])
             .args(["-drive", "format=raw,file=fat:rw:.qemu"])
             .args(["-serial", "stdio"])
-            .args(["-display", "gtk"])
+            .args(["-display", "gtk,gl=on"]) // software scaling makes audio stutter
             .args(["-monitor", "vc"])
             .args(qemu_args)
             .status()?
