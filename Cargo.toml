@@ -40,7 +40,7 @@ spin = { version = "0.10.0", features = ["lazy", "mutex", "spin_mutex"], default
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 cfg-if = "1"
 uart_16550 = "0.9"
-log = { version = "0.4", features = ["release_max_level_info"] }
+log = { version = "0.4", features = ["release_max_level_debug"] }
 owo-colors = "4"
 x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
 pci_types = "0.10"

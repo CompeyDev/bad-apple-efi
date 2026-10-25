@@ -70,7 +70,7 @@ impl SerialConsole {
         if log::set_logger(self).is_ok() {
             log::set_max_level(
                 // Allow setting a build-time max log level. In release builds, this is capped
-                // to info.
+                // to debug.
                 [option_env!("EFI_LOG"), option_env!("RUST_LOG")]
                     .into_iter()
                     .find_map(|env| env?.parse().ok())

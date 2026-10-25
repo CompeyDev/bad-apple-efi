@@ -5,6 +5,8 @@ use crate::tsc::{Ms, TSC};
 
 /// Records timings of each frame, under different phases. The results are logged to serial
 /// at the trace level, and a summary is logged every second at the debug level.
+///
+/// Only debug builds record anything, release builds just run the phases.
 pub struct FrameStats {
     /// Frames in a summary per second
     window: u32,
@@ -52,6 +54,11 @@ impl FrameStats {
 
     /// Runs `f` as the given phase of the current frame, recording its time.
     pub fn time<T>(&mut self, phase: Phase, f: impl FnOnce() -> T) -> T {
+        if !cfg!(debug_assertions) {
+            // On release mode, frame summaries are too verbose
+            return f();
+        }
+
         let start = TSC.now();
         self.start.get_or_insert(start);
 
@@ -63,6 +70,11 @@ impl FrameStats {
 
     /// Records the current frame's timings, and starts the next one.
     pub fn end_frame(&mut self, on_time: bool) {
+        if !cfg!(debug_assertions) {
+            // On release mode, frame summaries are too verbose
+            return;
+        }
+
         let end = TSC.now();
         let start = self.start.take().unwrap_or(end);
         let [render, wait, blit] = mem::take(&mut self.phases);
