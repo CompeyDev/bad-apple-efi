@@ -15,9 +15,9 @@ const DEFAULT_BAUD_RATE: BaudRate = BaudRate::Baud115200;
 
 #[rustfmt::skip]
 const DEFAULT_LEVEL: LevelFilter = if cfg!(debug_assertions) {
-    LevelFilter::Debug
+    LevelFilter::Trace
 } else {
-    LevelFilter::Info
+    LevelFilter::Debug
 };
 
 /// The global serial console instance.
