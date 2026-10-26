@@ -12,13 +12,7 @@ use crate::tsc::TSC;
 
 const COM1: u16 = 0x3F8;
 const DEFAULT_BAUD_RATE: BaudRate = BaudRate::Baud115200;
-
-#[rustfmt::skip]
-const DEFAULT_LEVEL: LevelFilter = if cfg!(debug_assertions) {
-    LevelFilter::Trace
-} else {
-    LevelFilter::Debug
-};
+const DEFAULT_LEVEL: LevelFilter = LevelFilter::Debug;
 
 /// The global serial console instance.
 pub static CONSOLE: SerialConsole = SerialConsole::new();
