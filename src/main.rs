@@ -27,6 +27,7 @@ mod hda;
 mod interrupts;
 mod libc;
 mod memory;
+mod paging;
 mod pipeline;
 mod pixel;
 mod segments;

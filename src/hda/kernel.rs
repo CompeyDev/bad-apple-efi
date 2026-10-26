@@ -1,6 +1,6 @@
 //! The kernel API uHDA expects its host to provide, see `uhda/kernel_api.h`.
 
-use alloc::alloc::{alloc_zeroed, dealloc, Layout};
+use alloc::alloc::Layout;
 use alloc::boxed::Box;
 use core::ffi::{c_char, c_void, CStr};
 use core::hint::spin_loop;
@@ -13,8 +13,8 @@ use x86_64::registers::rflags::{self, RFlags};
 
 use crate::hda::bindings::*;
 use crate::hda::pci::{Irq, PciDevice, PortAccess};
-use crate::libc;
 use crate::tsc::TSC;
+use crate::{libc, memory};
 
 const PAGE_SIZE: usize = 0x1000;
 const SCATTER_ALIGNMENT: usize = 128;
@@ -130,10 +130,10 @@ unsafe extern "C" fn uhda_kernel_free(ptr: *mut c_void, _size: usize) {
 // DMA
 //
 
-/// Allocates zeroed memory, or returns null for an empty or failed allocation.
+/// Allocates uncacheable zeroed memory, or returns null for an empty or failed allocation.
 fn allocate(size: usize, align: usize) -> *mut u8 {
     match Layout::from_size_align(size, align) {
-        Ok(layout) if size != 0 => unsafe { alloc_zeroed(layout) },
+        Ok(layout) if size != 0 => memory::dma::alloc(layout),
         _ => ptr::null_mut(),
     }
 }
@@ -141,7 +141,7 @@ fn allocate(size: usize, align: usize) -> *mut u8 {
 /// Frees memory from [`allocate`] with the same size and alignment.
 unsafe fn deallocate(ptr: *mut u8, size: usize, align: usize) {
     match Layout::from_size_align(size, align) {
-        Ok(layout) if !ptr.is_null() && size != 0 => unsafe { dealloc(ptr, layout) },
+        Ok(layout) if !ptr.is_null() && size != 0 => unsafe { memory::dma::dealloc(ptr, layout) },
         _ => {}
     }
 }
@@ -197,9 +197,7 @@ unsafe extern "C" fn uhda_kernel_deallocate_scatter(
     }
 }
 
-// NOTE: uHDA asks for an uncacheable mapping, but we keep the firmware's write-back one. HDA
-// controllers snoop the CPU caches for DMA on x86, which is all we target
-// ^ TODO ^ - If we have our own page tables, we could also map the framebuffer write-combining
+// Physical memory is identity-mapped, and DMA memory is already uncacheable from the pool
 #[no_mangle]
 unsafe extern "C" fn uhda_kernel_map(
     _handle: usize,

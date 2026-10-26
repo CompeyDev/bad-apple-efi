@@ -32,9 +32,15 @@ impl UefiAllocatorManager {
         log::debug!("Exited boot services");
         let region = Self::find_memory_region(mmap).expect("No usable memory found in memory map");
 
+        // Heap setup
         ALLOCATOR.lock().init(region.start as *mut u8, region.size);
         log::info!("Heap: {} MiB", region.size >> 20);
         log::debug!("Heap at {:#x}..{:#x} ({:?})", region.start, region.end(), region.memory_type);
+
+        // DMA pool setup
+        let dma_pool_size = 1 << 21; // 2 MiB
+        let dma_pool = dma::init(dma_pool_size);
+        log::debug!("DMA pool at {dma_pool:p}, {} KiB uncacheable", dma_pool_size >> 10);
 
         // Interrupts
         GDT.load();
@@ -60,6 +66,46 @@ impl UefiAllocatorManager {
         } else {
             Some(best_region)
         }
+    }
+}
+
+pub mod dma {
+    use core::alloc::{GlobalAlloc, Layout};
+
+    use linked_list_allocator::LockedHeap;
+
+    use crate::paging::PageTables;
+
+    /// Memory for DMA buffers, mapped as uncacheable.
+    static DMA_POOL: LockedHeap = LockedHeap::empty();
+
+    /// Initializes a DMA buffer of `size` bytes, and returns a pointer to it.
+    ///
+    /// It is recommended to use [`memory::dma::alloc`] and [`memory::dma::dealloc`] instead
+    /// of the raw pointer.
+    pub unsafe fn init(size: usize) -> *mut u8 {
+        let mut tables = PageTables::take_over();
+        let layout = Layout::from_size_align(size, size).unwrap();
+
+        let pool = super::ALLOCATOR.alloc(layout);
+        assert!(!pool.is_null(), "No memory left for the DMA pool");
+
+        tables.set_uncacheable(pool as u64, size as u64).expect("couldn't make DMA uncacheable");
+        DMA_POOL.lock().init(pool, size);
+        pool
+    }
+
+    /// Allocates zeroed memory from the uncacheable DMA pool, returning null on failure.
+    pub fn alloc(layout: Layout) -> *mut u8 {
+        unsafe { DMA_POOL.alloc_zeroed(layout) }
+    }
+
+    /// Frees memory from [`dma_alloc`].
+    ///
+    /// ## Safety
+    /// `ptr` must come from [`dma_alloc`] with the same `layout`.
+    pub unsafe fn dealloc(ptr: *mut u8, layout: Layout) {
+        unsafe { DMA_POOL.dealloc(ptr, layout) }
     }
 }
 
