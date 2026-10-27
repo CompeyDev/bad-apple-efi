@@ -1,25 +1,24 @@
 use core::time::Duration;
 
 use super::audio::AudioOutput;
-use crate::apic::ApicTimer;
+use crate::apic::APIC_TIMER;
 use crate::tsc::TSC;
 
 /// Longest sleep while waiting on the audio clock, so the hardware buffer keeps getting data.
-const AUDIO_POLL_MS: u64 = 4;
+const AUDIO_POLL: Duration = Duration::from_millis(4);
 
 /// Scheduler for frame rendering.
 ///
 /// Frames are shown at their timestamps against a clock, which is the audio being played
 /// when there is any, so the video stays in sync with it. Otherwise, the TSC is used.
-pub struct FramePacer<'a> {
-    timer: &'a ApicTimer,
+pub struct FramePacer {
     period: Duration,
     start: Option<u64>,
 }
 
-impl<'a> FramePacer<'a> {
-    pub fn new(timer: &'a ApicTimer, fps: u32) -> Self {
-        Self { timer, period: Duration::from_secs(1) / fps, start: None }
+impl FramePacer {
+    pub fn new(fps: u32) -> Self {
+        Self { period: Duration::from_secs(1) / fps, start: None }
     }
 
     /// The current playback time, derived from either the `audio` clock or the starting
@@ -51,15 +50,13 @@ impl<'a> FramePacer<'a> {
                 break;
             };
 
-            // TODO: use APIC TSC timer mode.
-            let millis = remaining.as_secs() * 1000 + u64::from(remaining.subsec_millis());
+            // With audio, we need to wake up a bit earlier to feed the buffer
             match audio.as_deref_mut() {
-                _ if millis == 0 => core::hint::spin_loop(),
                 Some(audio) => {
-                    self.timer.delay(millis.min(AUDIO_POLL_MS) as u32);
+                    APIC_TIMER.sleep(remaining.min(AUDIO_POLL));
                     audio.poll();
                 }
-                None => self.timer.delay(millis as u32),
+                None => APIC_TIMER.sleep(remaining),
             }
         }
 

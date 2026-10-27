@@ -11,7 +11,7 @@ use core::ffi::c_void;
 use log::{info, warn};
 use uefi::{boot, table, Handle, Status};
 
-use crate::apic::ApicTimer;
+use crate::apic::APIC_TIMER;
 use crate::display::Display;
 use crate::hda::Hda;
 use crate::memory::UefiAllocatorManager;
@@ -84,7 +84,7 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
     // Initialize display, memory,  timers and audio
     let mut display = Display::open().expect("Failed to open display");
     let _mem_region = unsafe { UefiAllocatorManager::init() };
-    let timer = ApicTimer::calibrate(16);
+    APIC_TIMER.calibrate(16);
 
     if !Tsc::is_invariant() {
         warn!("TSC is not invariant, so frame pacing may not be accurate");
@@ -104,7 +104,7 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
         Some(AudioOutput::new(hda, stream))
     });
 
-    let mut pipeline = Pipeline::new(&mut display, audio, &timer, tsc_hz, player.framerate());
+    let mut pipeline = Pipeline::new(&mut display, audio, tsc_hz, player.framerate());
 
     let start = TSC.now();
     player.play(&mut pipeline).expect("Playback failed");
@@ -117,7 +117,7 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
     if cfg!(debug_assertions) {
         // Hang indefinitely in debug mode
         loop {
-            core::hint::spin_loop()
+            x86_64::instructions::hlt()
         }
     } else {
         Status::SUCCESS
@@ -130,6 +130,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     CONSOLE.write_panic(info);
 
     loop {
-        core::hint::spin_loop();
+        x86_64::instructions::hlt();
     }
 }

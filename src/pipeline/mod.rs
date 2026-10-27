@@ -2,7 +2,6 @@ use core::time::Duration;
 
 use fast_image_resize::{ImageBufferError, ResizeError};
 
-use crate::apic::ApicTimer;
 use crate::display::Display;
 use crate::tsc::Ms;
 use crate::video::{AudioSink, FrameSink, VideoError, VideoFrame};
@@ -36,7 +35,7 @@ pub struct Pipeline<'a, 'd> {
     display: &'a mut Display<'d>,
     audio: Option<AudioOutput<'a>>,
     renderer: Renderer,
-    pacer: FramePacer<'a>,
+    pacer: FramePacer,
     stats: FrameStats,
 }
 
@@ -44,7 +43,6 @@ impl<'a, 'd> Pipeline<'a, 'd> {
     pub fn new(
         display: &'a mut Display<'d>,
         audio: Option<AudioOutput<'a>>,
-        timer: &'a ApicTimer,
         tsc_hz: u64,
         fps: u32,
     ) -> Self {
@@ -59,7 +57,7 @@ impl<'a, 'd> Pipeline<'a, 'd> {
             display,
             audio,
             renderer: Renderer::new(width, height),
-            pacer: FramePacer::new(timer, fps),
+            pacer: FramePacer::new(fps),
             stats: FrameStats::new(fps),
         }
     }

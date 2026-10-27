@@ -11,9 +11,9 @@ use core::time::Duration;
 use x86_64::instructions::interrupts;
 use x86_64::registers::rflags::{self, RFlags};
 
+use crate::apic::APIC_TIMER;
 use crate::hda::bindings::*;
 use crate::hda::pci::{Irq, PciDevice, PortAccess};
-use crate::tsc::TSC;
 use crate::{libc, memory};
 
 const PAGE_SIZE: usize = 0x1000;
@@ -257,12 +257,7 @@ unsafe extern "C" fn uhda_kernel_unlock_spinlock(spinlock: *mut c_void, irq_stat
 
 #[no_mangle]
 extern "C" fn uhda_kernel_delay(microseconds: u32) {
-    let ticks = TSC.to_ticks(Duration::from_micros(microseconds.into()));
-    let end = TSC.now() + ticks.expect("TSC is calibrated before HDA is initialized");
-
-    while TSC.now() < end {
-        spin_loop();
-    }
+    APIC_TIMER.sleep(Duration::from_micros(microseconds.into()));
 }
 
 #[no_mangle]

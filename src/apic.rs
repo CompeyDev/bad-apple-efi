@@ -1,8 +1,10 @@
-use core::arch::x86_64::_mm_mfence;
+use core::arch::x86_64::{__cpuid, _mm_mfence};
 use core::arch::{asm, naked_asm};
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
 use x86_64::instructions::interrupts;
+use x86_64::registers::model_specific::Msr;
 
 use crate::interrupts::{InterruptSemaphore, IDT};
 use crate::tsc::TSC;
@@ -33,28 +35,45 @@ static LAPIC_BASE: spin::Lazy<u32> = spin::Lazy::new(|| {
     }
 });
 
+const IA32_TSC_DEADLINE_MSR: u32 = 0x6E0;
+
+/// If a wait is issued for shorter than this threshold, it is too expensive to use the
+/// interrupt round trip which may take longer than the requested time. In this case, we
+/// use a simple spin loop to busy wait. Busy waiting keeps the CPU active for a very short
+/// period of time too, so that is fine.
+const SPIN_THRESHOLD: Duration = Duration::from_micros(20);
+
 static TIMER_SEMAPHORE: InterruptSemaphore = InterruptSemaphore::new();
+
+/// The global [`ApicTimer`] instance. [`ApicTimer::calibrate`] must be called once.
+pub static APIC_TIMER: ApicTimer = ApicTimer::new();
+
 //
 // Local APIC Timer
 //
 
 /// [APIC](https://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller) timer
 /// abstraction for delay functionality.
-#[derive(Debug, Clone, Copy)]
 pub struct ApicTimer {
-    /// Base frequency that the timer ticks at naturally
-    frequency: u32,
+    /// Base frequency that the timer ticks at naturally, zero when uncalibrated
+    frequency: AtomicU32,
     /// Divisor applied to the base frequency
-    divisor: u32,
+    divisor: AtomicU32,
 }
 
 impl ApicTimer {
+    const fn new() -> Self {
+        Self { frequency: AtomicU32::new(0), divisor: AtomicU32::new(1) }
+    }
+
     /// Spurious interrupt vector number
     const SPURIOUS_VECTOR: u32 = 0xFF;
     /// APIC Software Enable bit
     const APIC_SW_ENABLE: u32 = 0x100;
     /// LVT Timer mask bit (disable interrupts)
     const LVT_MASKED: u32 = 0x10000;
+    /// LVT Timer mode bits for TSC deadline mode
+    const LVT_TSC_DEADLINE: u32 = 0b10 << 17;
     /// Interrupt vector used for APIC timer interrupts
     pub const TIMER_VECTOR: u8 = 0x30;
 
@@ -101,7 +120,7 @@ impl ApicTimer {
     /// The divisor determines the timer frequency. The divisor must be a power
     /// of two from 1 to 128 (i.e., 1, 2, 4, 8, 16, 32, 64, or 128). For high
     /// precision, 16 is commonly used.
-    pub fn calibrate(divisor: u32) -> Self {
+    pub fn calibrate(&self, divisor: u32) {
         // Enable APIC with spurious interrupt vector
         unsafe {
             Self::lapic_svr().write_volatile(Self::APIC_SW_ENABLE | Self::SPURIOUS_VECTOR);
@@ -115,7 +134,8 @@ impl ApicTimer {
         let frequency = Self::calibrate_apic_with_tsc(divisor);
         log::debug!("APIC timer base frequency: {} MHz (divisor {divisor})", frequency / 1_000_000);
 
-        Self { frequency, divisor }
+        self.frequency.store(frequency, Ordering::Relaxed);
+        self.divisor.store(divisor, Ordering::Relaxed);
     }
 
     /// Calibrate APIC timer base frequency using TSC as reference.
@@ -188,16 +208,28 @@ impl ApicTimer {
     /// ticks is calculated based on the desired delay, the timer frequency, and
     /// the configured divisor.
     pub fn delay(&self, delay_ms: u32) {
-        let base_ticks_per_ms = self.frequency / 1_000;
+        let base_ticks_per_ms = self.frequency.load(Ordering::Relaxed) / 1_000;
         let base_ticks = delay_ms * base_ticks_per_ms;
-        let effective_ticks = base_ticks / self.divisor;
+        let effective_ticks = base_ticks / self.divisor.load(Ordering::Relaxed);
 
         if effective_ticks == 0 {
             return;
         }
 
+        Self::wait_for_interrupt(|| unsafe {
+            // Oneshot mode unmasked timer with our vector
+            Self::lapic_lvt_timer().write_volatile(Self::TIMER_VECTOR as u32);
+            Self::lapic_icr().write_volatile(effective_ticks);
+        });
+    }
+
+    /// Runs `f`, expecting it to start a timer on [`Self::TIMER_VECTOR`], and halts until
+    /// the interrupt fires, then remasks the timer.
+    ///
+    /// Used internally for both timer modes.
+    fn wait_for_interrupt(f: impl FnOnce()) {
         #[unsafe(naked)]
-        extern "C" fn delay_interrupt_handler() {
+        extern "C" fn timer_interrupt_handler() {
             naked_asm!(
                 "push rax", // snapshot rax
 
@@ -222,16 +254,67 @@ impl ApicTimer {
             );
         }
 
-        IDT.register_handler(Self::TIMER_VECTOR, delay_interrupt_handler);
-        unsafe {
-            // Oneshot mode unmasked timer with our vector
-            TIMER_SEMAPHORE.reset();
-            Self::lapic_lvt_timer().write_volatile(Self::TIMER_VECTOR as u32);
-            Self::lapic_icr().write_volatile(effective_ticks);
+        IDT.register_handler(Self::TIMER_VECTOR, timer_interrupt_handler);
+        TIMER_SEMAPHORE.reset();
+        f();
 
-            // Wait for the timer to finish, and remask it
-            TIMER_SEMAPHORE.wait();
+        // Wait for the timer to finish, and remask it
+        TIMER_SEMAPHORE.wait();
+        unsafe {
             Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED | Self::TIMER_VECTOR as u32);
         }
+    }
+
+    /// Whether the timer can wait until an absolute TSC value (`CPUID.01H:ECX[24]`).
+    pub fn supports_tsc_deadline() -> bool {
+        __cpuid(1).ecx & (1 << 24) != 0
+    }
+
+    /// Sleeps for `duration`. See [`ApicTimer::sleep_until`].
+    pub fn sleep(&self, duration: Duration) {
+        if let Some(ticks) = TSC.to_ticks(duration) {
+            self.sleep_until(TSC.now() + ticks);
+        }
+    }
+
+    /// Sleeps until the TSC reaches `deadline`, halting the CPU.
+    ///
+    /// If the wait time is under the [`SPIN_THRESHOLD`], busy waiting is used instead.
+    ///
+    /// On CPUs without support for TSC deadline mode on the APIC, oneshot mode is used to
+    /// replicate its behavior, which only has whole millisecond granularity.
+    pub fn sleep_until(&self, deadline: u64) {
+        let Some(remaining) = deadline.checked_sub(TSC.now()) else { return };
+        let remaining = TSC.to_duration(remaining).unwrap_or_default();
+
+        if remaining >= SPIN_THRESHOLD {
+            if Self::supports_tsc_deadline() {
+                Self::sleep_tsc_deadline(deadline);
+            } else {
+                log::warn!("TSC deadline mode unsupported, using oneshot mode");
+                let millis = remaining.as_secs() * 1000 + u64::from(remaining.subsec_millis());
+                if millis > 0 {
+                    self.delay(millis as u32);
+                }
+            }
+        }
+
+        // If the wait time is too small, fall back to a spin loop
+        while TSC.now() < deadline {
+            log::debug!("Wait time too granular, using spin loop");
+            core::hint::spin_loop();
+        }
+    }
+
+    fn sleep_tsc_deadline(deadline: u64) {
+        Self::wait_for_interrupt(|| unsafe {
+            let lvt = Self::LVT_TSC_DEADLINE | Self::TIMER_VECTOR as u32;
+            Self::lapic_lvt_timer().write_volatile(lvt);
+            _mm_mfence(); // mode switch should be ordered before MSR (source: SDM)
+            Msr::new(IA32_TSC_DEADLINE_MSR).write(deadline);
+        });
+
+        // The deadline disarms itself anyway, just to be safe
+        unsafe { Msr::new(IA32_TSC_DEADLINE_MSR).write(0) };
     }
 }
