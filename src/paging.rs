@@ -3,14 +3,15 @@ use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use x86_64::registers::control::Cr3;
+use x86_64::registers::model_specific::Msr;
 use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{PageTable, PageTableFlags as Flags, PhysFrame};
 use x86_64::{PhysAddr, VirtAddr};
 
 use self::raw::PageTableEntryExt;
 
-const SIZE_1G: u64 = 1 << 30;
-const SIZE_2M: u64 = 1 << 21;
+pub const SLOT_SIZE: u64 = 1 << 21; // 2 MiB
+pub const SUPERPAGE_SIZE: u64 = 1 << 30; // 1 GiB
 
 /// The PAT bit of a 1 GiB or 2 MiB page, a part of its address bits.
 const LARGE_PAT: u64 = 1 << 12;
@@ -21,9 +22,9 @@ const SMALL_PAT: Flags = Flags::HUGE_PAGE;
 /// PAT (equivalent to `PCD | PWT`).
 const CACHE_BITS: Flags = Flags::NO_CACHE.union(Flags::WRITE_THROUGH);
 
-/// A memory type, picked through one of the first four PAT entries.
+/// A memory type, picked through one of the PAT entries.
 ///
-/// These assume the PAT still has its default layout for those entries.
+/// The first four assume the PAT still has its default layout for those entries.
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryType {
@@ -33,15 +34,18 @@ pub enum MemoryType {
     WriteThrough,
     /// PAT entry 3, the CPU only ever reads and writes the memory directly.
     Uncacheable,
+    /// PAT entry 5, writes are buffered and sent to memory in bursts. Reads are slow.
+    WriteCombining,
 }
 
 impl MemoryType {
-    /// The `PCD | PWT` bits that pick this type's PAT entry, with the PAT bit itself clear.
-    fn flags(self) -> Flags {
+    /// The `PCD | PWT` bits that pick this type's PAT entry, and whether its PAT bit is set.
+    fn bits(self) -> (Flags, bool) {
         match self {
-            Self::WriteBack => Flags::empty(),
-            Self::WriteThrough => Flags::WRITE_THROUGH,
-            Self::Uncacheable => CACHE_BITS,
+            Self::WriteBack => (Flags::empty(), false),
+            Self::WriteThrough => (Flags::WRITE_THROUGH, false),
+            Self::Uncacheable => (CACHE_BITS, false),
+            Self::WriteCombining => (Flags::WRITE_THROUGH, true),
         }
     }
 }
@@ -70,13 +74,16 @@ impl Mapping<'_> {
         match self {
             Self::Huge(entry) => {
                 // For large pages, the PAT bit is a part of the address bits
-                let addr = entry.addr().as_u64() & !LARGE_PAT;
-                let flags = (entry.flags() - CACHE_BITS) | ty.flags();
+                let (cache, pat) = ty.bits();
+                let addr = (entry.addr().as_u64() & !LARGE_PAT) | if pat { LARGE_PAT } else { 0 };
+                let flags = (entry.flags() - CACHE_BITS) | cache;
                 entry.set_addr(PhysAddr::new(addr), flags);
             }
             Self::Small(table) => {
+                let (cache, pat) = ty.bits();
+                let pat = if pat { SMALL_PAT } else { Flags::empty() };
                 for entry in table.iter_mut() {
-                    entry.set_flags((entry.flags() - CACHE_BITS - SMALL_PAT) | ty.flags());
+                    entry.set_flags((entry.flags() - CACHE_BITS - SMALL_PAT) | cache | pat);
                 }
             }
         }
@@ -131,12 +138,31 @@ impl PageTables {
         ty: MemoryType,
     ) -> Result<(), Unmapped> {
         assert!(
-            start.is_multiple_of(SIZE_2M) && size.is_multiple_of(SIZE_2M),
+            start.is_multiple_of(SLOT_SIZE) && size.is_multiple_of(SLOT_SIZE),
             "range must be 2 MiB aligned"
         );
 
+        if ty == MemoryType::WriteCombining {
+            const IA32_PAT_MSR: u32 = 0x277;
+            const WRITE_COMBINING_ENTRY: u32 = 5;
+            const PAT_WRITE_COMBINING: u64 = 0x01;
+
+            let shift = WRITE_COMBINING_ENTRY * 8;
+            let mut msr = Msr::new(IA32_PAT_MSR);
+
+            // SAFETY: The PAT is read and written as a whole, only changing the entry we own
+            unsafe {
+                let old = msr.read();
+                let new = (old & !(0xFF << shift)) | (PAT_WRITE_COMBINING << shift);
+                if new != old {
+                    msr.write(new);
+                    log::debug!("Reprogrammed the PAT: {old:#018x} to {new:#018x}");
+                }
+            }
+        }
+
         let mut result = Ok(());
-        for addr in (start..start + size).step_by(SIZE_2M as usize) {
+        for addr in (start..start + size).step_by(SLOT_SIZE as usize) {
             match self.mapping(addr) {
                 Ok(mapping) => mapping.set_memory_type(ty),
                 Err(err) => {
@@ -212,7 +238,7 @@ mod raw {
     use x86_64::structures::paging::{PageTable, PageTableFlags as Flags};
     use x86_64::PhysAddr;
 
-    use super::{LARGE_PAT, SIZE_1G, SIZE_2M};
+    use super::{LARGE_PAT, SLOT_SIZE, SUPERPAGE_SIZE};
 
     /// Deep copies a table.
     pub(super) fn copy(src: &PageTable, level: u8) -> &'static mut PageTable {
@@ -257,11 +283,11 @@ mod raw {
     impl PageTableEntryExt for PageTableEntry {
         fn split(&mut self) {
             let (flags, raw) = (self.flags(), self.addr().as_u64());
-            let (base, pat) = (raw & !(SIZE_1G - 1), raw & LARGE_PAT);
+            let (base, pat) = (raw & !(SUPERPAGE_SIZE - 1), raw & LARGE_PAT);
 
             let pd = Box::leak(Box::new(PageTable::new()));
             for (i, page) in pd.iter_mut().enumerate() {
-                page.set_addr(PhysAddr::new((base + i as u64 * SIZE_2M) | pat), flags);
+                page.set_addr(PhysAddr::new((base + i as u64 * SLOT_SIZE) | pat), flags);
             }
 
             self.set_addr(phys_of(pd), flags - Flags::HUGE_PAGE);

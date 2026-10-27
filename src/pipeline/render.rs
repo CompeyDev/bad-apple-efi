@@ -2,10 +2,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use fast_image_resize::images::Image;
-use fast_image_resize::{PixelType, Resizer};
+use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 
 use super::PipelineError;
-use crate::pixel::Color;
 use crate::video::VideoFrame;
 
 cfg_if::cfg_if! {
@@ -13,13 +12,32 @@ cfg_if::cfg_if! {
         use core::iter;
         use crate::video::{ColorMatrix, ColorRange, Colorimetry};
 
-        // No need to two tone map for a "retro" feeling on high res mode
         const PIXEL_TYPE: PixelType = PixelType::U8x3;
-        const SHADE: fn(&[u8]) -> Color = |px| Color::Rgb(px[0], px[1], px[2]);
+        const FILTER: FilterType = FilterType::Lanczos3;
+
+        /// Packs a row of RGB samples into display pixels.
+        #[inline(always)]
+        fn shade_row(dst: &mut [u32], src: &[u8]) {
+            for (out, px) in dst.iter_mut().zip(src.chunks_exact(PIXEL_TYPE.size())) {
+                *out = u32::from(px[0]) << 16 | u32::from(px[1]) << 8 | u32::from(px[2]);
+            }
+        }
     } else {
+        use crate::pixel::Color;
+
         const PIXEL_TYPE: PixelType = PixelType::U8;
-        const SHADE: fn(&[u8]) -> Color =
-            |px| Color::Rgb(px[0], px[0], px[0]).to_two_tone(Color::Gray, Color::WHITE, 160);
+        const FILTER: FilterType = FilterType::Bilinear;
+
+        /// Two tone maps a row of gray samples into display pixels.
+        #[inline(always)]
+        fn shade_row(dst: &mut [u32], src: &[u8]) {
+            const THRESHOLD: u8 = 160;
+
+            let (dark, light): (u32, u32) = (Color::Gray.into(), Color::WHITE.into());
+            for (out, &gray) in dst.iter_mut().zip(src) {
+                *out = if gray >= THRESHOLD { light } else { dark };
+            }
+        }
     }
 }
 
@@ -28,21 +46,27 @@ pub struct Renderer {
     pixels: Vec<u8>,
     scaled: Image<'static>,
     resizer: Resizer,
-    output: Vec<Color>,
+    options: ResizeOptions,
+    display: (usize, usize),
+    output: Vec<u32>,
 }
 
 impl Renderer {
     pub fn new(width: usize, height: usize) -> Self {
+        let resizer = Resizer::new();
+
         Self {
             pixels: Vec::new(),
             scaled: Image::new(width as u32, height as u32, PIXEL_TYPE),
-            resizer: Resizer::new(),
-            output: vec![Color::default(); width * height],
+            resizer,
+            options: ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FILTER)),
+            display: (width, height),
+            output: vec![0; width * height],
         }
     }
 
-    /// The pixels of the last rendered frame.
-    pub fn output(&self) -> &[Color] {
+    /// The pixels of the last rendered frame, as `0x00RRGGBB` for the whole display.
+    pub fn output(&self) -> &[u32] {
         &self.output
     }
 
@@ -53,12 +77,14 @@ impl Renderer {
         let size = frame.width * frame.height * PIXEL_TYPE.size();
         if self.pixels.len() != size {
             self.pixels.resize(size, 0);
+            self.scaled = Image::new(self.display.0 as u32, self.display.1 as u32, PIXEL_TYPE);
+
             log::debug!(
-                "Video frames are {}x{}, scaled to {}x{}",
+                "Video frames scaled from {}x{} to {}x{}",
                 frame.width,
                 frame.height,
-                self.scaled.width(),
-                self.scaled.height()
+                self.display.0,
+                self.display.1,
             );
         }
 
@@ -66,11 +92,12 @@ impl Renderer {
 
         let (width, height) = (frame.width as u32, frame.height as u32);
         let src = Image::from_slice_u8(width, height, &mut self.pixels, PIXEL_TYPE)?;
-        self.resizer.resize(&src, &mut self.scaled, None)?;
+        self.resizer.resize(&src, &mut self.scaled, &self.options)?;
 
-        let pixels = self.scaled.buffer().chunks_exact(PIXEL_TYPE.size());
-        for (out, px) in self.output.iter_mut().zip(pixels) {
-            *out = SHADE(px);
+        let (width, _) = self.display;
+        let src = self.scaled.buffer().chunks_exact(width * PIXEL_TYPE.size());
+        for (dst, src) in self.output.chunks_exact_mut(width).zip(src) {
+            shade_row(dst, src);
         }
 
         Ok(())

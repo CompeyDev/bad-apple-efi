@@ -29,6 +29,15 @@ codegen-units = 16          # We force enable AVX for rustc flags, LLVM parallel
 incremental = false         # ^ Same reason as above ^
 opt-level = 1               # Per-pixel rendering is too slow for 60 fps unoptimized
 
+# Minimize checks and maximize optimizations (mostly inlining) for resizing in debug and release 
+[profile.dev.package.fast_image_resize]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.release.package.fast_image_resize]
+opt-level = 3
+
 [dependencies]
 uefi = "0.36.1"
 thiserror = { version = "2.0.17", default-features = false }

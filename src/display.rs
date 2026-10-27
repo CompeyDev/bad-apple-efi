@@ -1,7 +1,10 @@
+use core::ops::Range;
+
 use thiserror::Error;
 use uefi::boot;
-use uefi::proto::console::gop::GraphicsOutput;
+use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 
+use crate::paging::{MemoryType, PageTables, SLOT_SIZE};
 use crate::pixel::Color;
 
 /// An abstraction around the low-level framebuffer for drawing graphics. Typically
@@ -24,25 +27,6 @@ pub enum DisplayError {
 }
 
 impl<'a> Display<'a> {
-    /// Creates a new Display instance from a framebuffer base pointer.
-    pub fn new(
-        framebuffer_base: *mut u32,
-        framebuffer_size: usize,
-        width: usize,
-        height: usize,
-        stride: usize,
-    ) -> Display<'a> {
-        Self {
-            framebuffer: unsafe {
-                core::slice::from_raw_parts_mut(framebuffer_base, framebuffer_size)
-            },
-
-            width,
-            height,
-            stride,
-        }
-    }
-
     /// Opens the display by initializing the Graphics Output Protocol (GOP). **This method must be
     /// called before exiting boot services**.
     ///
@@ -53,16 +37,35 @@ impl<'a> Display<'a> {
         let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>()?;
         let mut gop = boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle)?;
 
-        // TODO: Better scaling to use proper screen real-estate
+        // Maximum number of pixels that we can pick a mode for. Modes too large would render as
+        // a slideshow without a GPU, therefore we limit it. Values derived by testing in QEMU.
+        let pixel_budget = if cfg!(feature = "high_res") { 1280 * 800 } else { 1920 * 1080 };
+        let (native_width, native_height) = gop.current_mode_info().resolution();
+
         let mode_count = gop.modes().count();
         let mode = gop
             .modes()
-            .min_by_key(|m| m.info().resolution())
+            // TODO: add support for other pixel formats too
+            .filter(|mode| mode.info().pixel_format() == PixelFormat::Bgr)
+            .max_by_key(|mode| {
+                let (width, height) = mode.info().resolution();
+                let pixels = width * height;
+
+                // Prefer the same aspect ratio to prevent stretching
+                if pixels <= pixel_budget {
+                    let same_aspect = width * native_height == height * native_width;
+                    (true, same_aspect, pixels)
+                } else {
+                    (false, false, usize::MAX - pixels)
+                }
+            })
             .ok_or(DisplayError::NoDisplayModes)?;
 
         let (width, height) = mode.info().resolution();
         let stride = mode.info().stride();
-        gop.set_mode(&mode)?;
+        if gop.current_mode_info().resolution() != (width, height) {
+            gop.set_mode(&mode)?;
+        }
 
         let mut framebuffer = gop.frame_buffer();
         let (base, len) = (framebuffer.as_mut_ptr() as *mut u32, framebuffer.size() / 4);
@@ -75,27 +78,67 @@ impl<'a> Display<'a> {
             framebuffer.size() / 1024,
         );
 
-        Ok(Self::new(base, len, width, height, stride))
+        Ok(Self {
+            // SAFETY: framebuffer stays valid even after boot services exiting
+            framebuffer: unsafe { core::slice::from_raw_parts_mut(base, len) },
+            width,
+            height,
+            stride,
+        })
+    }
+
+    /// Returns the physical address range of the framebuffer.
+    pub fn framebuffer_range(&self) -> Range<u64> {
+        let start = self.framebuffer.as_ptr() as u64;
+        start..start + core::mem::size_of_val(&*self.framebuffer) as u64
+    }
+
+    /// Makes the framebuffer write-combining, which improves performance. Failures are
+    /// ignored.
+    ///
+    /// ## Safety
+    /// Page tables should have been taken over first, i.e. [`UefiAllocatorManager::init`]
+    /// should have been called before.
+    pub fn set_write_combining(&mut self, tables: &mut PageTables, heap: Range<u64>) {
+        let framebuffer = self.framebuffer_range();
+        let start = framebuffer.start & !(SLOT_SIZE - 1);
+        let end = framebuffer.end.next_multiple_of(SLOT_SIZE);
+
+        // If the display's memory is on regular RAM, it can share a page with the heap, so to be
+        // safe, we do not set it as write combining
+        if start < heap.end && heap.start < end {
+            log::warn!("Framebuffer shares memory with the heap, leaving it as is");
+            return;
+        }
+
+        // SAFETY: the framebuffer only holds pixels adnd does not need caching
+        match unsafe { tables.set_memory_type(start, end - start, MemoryType::WriteCombining) } {
+            Ok(()) => log::info!("Framebuffer is write-combining"),
+            Err(err) => {
+                log::warn!("Framebuffer is not write-combining, drawing will be slow: {err}")
+            }
+        }
     }
 
     pub fn clear(&mut self) {
         self.fill(Color::default());
     }
 
+    /// Fills the whole display with a color.
     pub fn fill(&mut self, color: Color) {
+        let value: u32 = color.into();
         for pixel in self.framebuffer.iter_mut() {
-            *pixel = color.into();
+            *pixel = value;
         }
     }
 
-    /// Directly writes the frame onto the display, copying its bytes row by row, skipping
-    /// any stride padding.
-    pub fn blit(&mut self, pixels: &[Color]) {
+    /// Writes the frame onto the display, one row at a time and skipping any stride padding.
+    ///
+    /// `pixels` are `width * height` values in the display's `0x00RRGGBB` format.
+    pub fn blit(&mut self, pixels: &[u32]) {
         let rows = self.framebuffer.chunks_mut(self.stride).zip(pixels.chunks(self.width));
         for (dst, src) in rows {
-            for (d, &c) in dst.iter_mut().zip(src) {
-                *d = c.into();
-            }
+            dst[..src.len()].copy_from_slice(src);
         }
     }
 }

@@ -81,20 +81,23 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
         xsave = cpu_features::is_xsave_supported()
     );
 
-    // Initialize display, memory,  timers and audio
+    // display + memory
     let mut display = Display::open().expect("Failed to open display");
-    let _mem_region = unsafe { UefiAllocatorManager::init() };
+    let (region, mut tables) = unsafe { UefiAllocatorManager::init() };
+
+    // timers
     APIC_TIMER.calibrate(16);
+
+    let tsc_hz = TSC.hz().expect("TSC should be calibrated");
+    info!("TSC frequency: {} MHz", tsc_hz / 1_000_000);
 
     if !Tsc::is_invariant() {
         warn!("TSC is not invariant, so frame pacing may not be accurate");
     }
 
-    let tsc_hz = TSC.hz().expect("TSC should be calibrated");
-    info!("TSC frequency: {} MHz", tsc_hz / 1_000_000);
-
+    // audio + display setup
     let hda = Hda::init().inspect_err(|err| warn!("Audio is unavailable: {err}")).ok();
-
+    display.set_write_combining(&mut tables, region.start as u64..region.end() as u64);
     display.clear();
 
     let mut player = VideoPlayer::new(VIDEO_DATA).expect("Failed to open video");
