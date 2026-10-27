@@ -1,41 +1,23 @@
+use core::arch::naked_asm;
 use core::arch::x86_64::{__cpuid, _mm_mfence};
-use core::arch::{asm, naked_asm};
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
 use x86_64::instructions::interrupts;
-use x86_64::registers::model_specific::Msr;
+use x86_64::registers::model_specific::{ApicBase, ApicBaseFlags, Msr};
 
 use crate::interrupts::{InterruptSemaphore, IDT};
 use crate::tsc::TSC;
 
-const IA32_APIC_BASE_MSR: u32 = 0x1B;
 static LAPIC_BASE: spin::Lazy<u32> = spin::Lazy::new(|| {
-    let low: u32;
-    let high: u32;
+    let (frame, flags) = ApicBase::read();
 
-    unsafe {
-        asm!(
-            "rdmsr",
-            in("ecx") IA32_APIC_BASE_MSR,
-            out("eax") low,
-            out("edx") high,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
+    // Our driver needs MMIO, so we look for xAPIC mode
+    let xapic = flags.intersection(ApicBaseFlags::LAPIC_ENABLE | ApicBaseFlags::X2APIC_ENABLE);
+    assert_eq!(xapic, ApicBaseFlags::LAPIC_ENABLE, "LAPIC disabled or x2APIC-only");
 
-    let value = ((high as u64) << 32) | (low as u64);
-    let base = value & 0xFFFF_F000; // Bits 12-35
-
-    // Bit 11 denotes whether LAPIC is globally enabled
-    if (value & (1 << 11)) != 0 {
-        base as u32
-    } else {
-        panic!("LAPIC disabled or x2APIC-only");
-    }
+    frame.start_address().as_u64() as u32
 });
-
-const IA32_TSC_DEADLINE_MSR: u32 = 0x6E0;
 
 /// If a wait is issued for shorter than this threshold, it is too expensive to use the
 /// interrupt round trip which may take longer than the requested time. In this case, we
@@ -74,6 +56,8 @@ impl ApicTimer {
     const LVT_MASKED: u32 = 0x10000;
     /// LVT Timer mode bits for TSC deadline mode
     const LVT_TSC_DEADLINE: u32 = 0b10 << 17;
+    /// `IA32_TSC_DEADLINE` MSR, which fires the timer when the TSC reaches its value
+    const TSC_DEADLINE_MSR: u32 = 0x6E0;
     /// Interrupt vector used for APIC timer interrupts
     pub const TIMER_VECTOR: u8 = 0x30;
 
@@ -311,10 +295,10 @@ impl ApicTimer {
             let lvt = Self::LVT_TSC_DEADLINE | Self::TIMER_VECTOR as u32;
             Self::lapic_lvt_timer().write_volatile(lvt);
             _mm_mfence(); // mode switch should be ordered before MSR (source: SDM)
-            Msr::new(IA32_TSC_DEADLINE_MSR).write(deadline);
+            Msr::new(Self::TSC_DEADLINE_MSR).write(deadline);
         });
 
         // The deadline disarms itself anyway, just to be safe
-        unsafe { Msr::new(IA32_TSC_DEADLINE_MSR).write(0) };
+        unsafe { Msr::new(Self::TSC_DEADLINE_MSR).write(0) };
     }
 }
