@@ -82,7 +82,6 @@ impl SerialConsole {
 
     /// Handles panics by bypassing the logging facade, since the logger could also be an origin
     /// of the panic.
-    #[cfg(not(feature = "qemu"))]
     pub(crate) fn write_panic(&self, info: &core::panic::PanicInfo) {
         // If the lock is held, or is Some, that means UART was initialized previously
         if !self.uart.try_lock().is_none_or(|uart| uart.is_some()) {

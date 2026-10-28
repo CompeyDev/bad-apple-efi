@@ -11,7 +11,7 @@ default-members = ["."]
 [features]
 default = []
 high_res = []
-qemu = ["uefi/qemu"]
+qemu = ["dep:qemu-exit"]
 
 # Taken from https://github.com/microsoft/edit/blob/a3a6f5f/Cargo.toml#L20-L31
 # We use `opt-level = "s"` as it significantly reduces binary size.
@@ -54,6 +54,7 @@ owo-colors = "4"
 x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
 pci_types = "0.10"
 ffi-opaque = "2"
+qemu-exit = { version = "3", optional = true }
 
 [build-dependencies]
 autotools = "0.2"

@@ -134,7 +134,11 @@ impl TaskRunner {
     }
 
     pub fn task_qemu_run(&self, cargo_args: &[String], qemu_args: &[String]) -> Result<()> {
-        self.task_build(cargo_args)?;
+        // The guest behaves specially under QEMU, e.g. picking the smallest display mode, and
+        // panics exit the emulator instead of hanging
+        let mut build_args = vec![String::from("--features"), String::from("qemu")];
+        build_args.extend(cargo_args.iter().cloned());
+        self.task_build(&build_args)?;
 
         let qemu_dir = PathBuf::from(".qemu/efi/boot");
         fs::create_dir_all(&qemu_dir)?;
@@ -153,6 +157,7 @@ impl TaskRunner {
             .args(["-machine", "pcspk-audiodev=speaker"])
             .args(["-device", "intel-hda"])
             .args(["-device", "hda-output,audiodev=hda0"])
+            .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]) // exit on guest panic
             .args(["-vga", "std"])
             .args(["-machine", "q35,accel=kvm:tcg"])
             .args(["-m", "512M"])

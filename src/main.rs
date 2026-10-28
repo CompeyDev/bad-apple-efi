@@ -127,12 +127,24 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
     }
 }
 
-#[cfg(not(feature = "qemu"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     CONSOLE.write_panic(info);
 
+    // Exits QEMU through its `isa-debug-exit` device, with the same code as the uefi crate
+    #[cfg(feature = "qemu")]
+    {
+        // While the `uefi` crate already provides the `qemu` feature, it relies on boot services
+        // which we already exit early, since it relies on the simple text protocol. Since we init
+        // our own serial console anyway, that's not necessary and we call `qemu-exit` directly
+        use qemu_exit::QEMUExit;
+        qemu_exit::X86::new(0xF4, 3).exit_failure();
+    }
+
+    #[cfg(not(feature = "qemu"))]
     loop {
+        // Idle permanently
+        x86_64::instructions::interrupts::disable();
         x86_64::instructions::hlt();
     }
 }
