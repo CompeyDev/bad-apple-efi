@@ -2,7 +2,7 @@ use core::ops::Range;
 
 use thiserror::Error;
 use uefi::boot;
-use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
+use uefi::proto::console::gop::{GraphicsOutput, Mode, PixelFormat};
 
 use crate::paging::{MemoryType, PageTables, SLOT_SIZE};
 use crate::pixel::Color;
@@ -37,29 +37,14 @@ impl<'a> Display<'a> {
         let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>()?;
         let mut gop = boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle)?;
 
-        // Maximum number of pixels that we can pick a mode for. Modes too large would render as
-        // a slideshow without a GPU, therefore we limit it. Values derived by testing in QEMU.
-        let pixel_budget = if cfg!(feature = "high_res") { 1280 * 800 } else { 1920 * 1080 };
-        let (native_width, native_height) = gop.current_mode_info().resolution();
-
         let mode_count = gop.modes().count();
-        let mode = gop
+        let bgr_modes = gop
             .modes()
             // TODO: add support for other pixel formats too
-            .filter(|mode| mode.info().pixel_format() == PixelFormat::Bgr)
-            .max_by_key(|mode| {
-                let (width, height) = mode.info().resolution();
-                let pixels = width * height;
+            .filter(|mode| mode.info().pixel_format() == PixelFormat::Bgr);
 
-                // Prefer the same aspect ratio to prevent stretching
-                if pixels <= pixel_budget {
-                    let same_aspect = width * native_height == height * native_width;
-                    (true, same_aspect, pixels)
-                } else {
-                    (false, false, usize::MAX - pixels)
-                }
-            })
-            .ok_or(DisplayError::NoDisplayModes)?;
+        let native = gop.current_mode_info().resolution();
+        let mode = Display::pick_mode(bgr_modes, native).ok_or(DisplayError::NoDisplayModes)?;
 
         let (width, height) = mode.info().resolution();
         let stride = mode.info().stride();
@@ -84,6 +69,38 @@ impl<'a> Display<'a> {
             width,
             height,
             stride,
+        })
+    }
+
+    /// Picks the mode to use out of `modes`, given the `native` resolution.
+    ///
+    /// In QEMU, uploading the framebuffer has large overhead. To maintain a consistent framerate,
+    /// we render to the smallest mode possible in order to minimize the total number of pixels.
+    #[cfg(feature = "qemu")]
+    fn pick_mode(modes: impl Iterator<Item = Mode>, _native: (usize, usize)) -> Option<Mode> {
+        modes.min_by_key(|mode| mode.info().resolution())
+    }
+
+    /// Picks the mode to use out of `modes`, given the `native` resolution.
+    #[cfg(not(feature = "qemu"))]
+    fn pick_mode(modes: impl Iterator<Item = Mode>, native: (usize, usize)) -> Option<Mode> {
+        // Maximum number of pixels that we can pick a mode for. Modes too large would
+        // render as a slideshow without a GPU, therefore we limit it. Values derived by
+        // testing in QEMU.
+        let pixel_budget = if cfg!(feature = "high_res") { 1280 * 800 } else { 1920 * 1080 };
+        let (native_width, native_height) = native;
+
+        modes.max_by_key(|mode| {
+            let (width, height) = mode.info().resolution();
+            let pixels = width * height;
+
+            // Prefer the same aspect ratio to prevent stretching
+            if pixels <= pixel_budget {
+                let same_aspect = width * native_height == height * native_width;
+                (true, same_aspect, pixels)
+            } else {
+                (false, false, usize::MAX - pixels)
+            }
         })
     }
 
