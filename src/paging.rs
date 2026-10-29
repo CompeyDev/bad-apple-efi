@@ -2,7 +2,7 @@ use core::arch::asm;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use x86_64::registers::control::Cr3;
+use x86_64::registers::control::{Cr3, Cr4, Cr4Flags};
 use x86_64::registers::model_specific::Msr;
 use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{PageTable, PageTableFlags as Flags, PhysFrame};
@@ -95,7 +95,9 @@ impl Mapping<'_> {
 /// Typically, this is constructed once with [`PageTables::take_over`] during early boot, then
 /// used to change the memory types of ranges by using [`PageTables::set_memory_type`].
 pub struct PageTables {
-    pml4: &'static mut PageTable, // invariant: tables are allocated by us, and not the firmware
+    root: &'static mut PageTable, // invariant: tables are allocated by us, and not the firmware
+    /// Whether 5-level paging is enabled, which makes `root` a PML5 instead of a PML4.
+    la57: bool,
 }
 
 impl PageTables {
@@ -115,12 +117,15 @@ impl PageTables {
         static TAKEN: AtomicBool = AtomicBool::new(false);
         assert!(!TAKEN.swap(true, Ordering::SeqCst), "page tables were already taken over");
 
-        let (frame, flags) = Cr3::read();
-        let pml4 = raw::copy(unsafe { raw::phys_to_table(frame.start_address()) }, 4);
-        unsafe { Cr3::write(PhysFrame::containing_address(raw::phys_of(pml4)), flags) };
+        let la57 = Cr4::read().contains(Cr4Flags::L5_PAGING);
+        let levels = if la57 { 5 } else { 4 };
 
-        log::debug!("Switched to our own page tables at {pml4:p}");
-        Self { pml4 }
+        let (frame, flags) = Cr3::read();
+        let root = raw::copy(unsafe { raw::phys_to_table(frame.start_address()) }, levels);
+        unsafe { Cr3::write(PhysFrame::containing_address(raw::phys_of(root)), flags) };
+
+        log::debug!("Switched to our own {levels} level page tables at {root:p}");
+        Self { root, la57 }
     }
 
     /// Changes the memory type of a 2 MiB aligned range, then flushes the TLB and cache.
@@ -172,7 +177,10 @@ impl PageTables {
             }
         }
 
-        self.flush(); // flush even on an error, since some slots may have changed anyway
+        // Flush even on an error, since some slots may have changed anyway
+        flush_tlb();
+        unsafe { asm!("wbinvd", options(nostack, preserves_flags)) };
+
         result
     }
 
@@ -193,15 +201,24 @@ impl PageTables {
         let unmapped = Unmapped(addr);
         let virt = VirtAddr::try_new(addr).map_err(|_| unmapped)?;
 
-        let pdpt = self.pml4[virt.p4_index()].child().ok_or(unmapped)?;
+        let pml4 = if self.la57 {
+            self.root[(addr >> 48) as usize & 0x1FF].child().ok_or(unmapped)?
+        } else {
+            &mut *self.root
+        };
+
+        let pdpt = pml4[virt.p4_index()].child().ok_or(unmapped)?;
         let entry = &mut pdpt[virt.p3_index()];
         if !entry.flags().contains(Flags::PRESENT) {
             return Err(unmapped);
         }
 
-        // 1 GiB pages are split to change only one slot
+        // 1 GiB pages are split to change only one slot. The old page must be flushed before
+        // changing any of the new ones, so the CPU never caches both with different memory
+        // types. The Intel SDM mentions this specifically.
         if entry.flags().contains(Flags::HUGE_PAGE) {
             entry.split();
+            flush_tlb();
         }
 
         let pd = entry.child().ok_or(unmapped)?;
@@ -216,15 +233,15 @@ impl PageTables {
             entry.child().map(Mapping::Small).ok_or(unmapped)
         }
     }
+}
 
-    /// Makes the CPU see the new tables and writes back anything cached before a type change.
-    fn flush(&mut self) {
-        // HACK: reloading CR3 flushes the TLB
-        let (frame, flags) = Cr3::read();
-        unsafe {
-            Cr3::write(frame, flags);
-            asm!("wbinvd", options(nostack, preserves_flags));
-        }
+/// Flushes every TLB entry, including global ones, which reloading CR3 would keep.
+fn flush_tlb() {
+    // HACK: toggling global pages flushes the whole TLB
+    let cr4 = Cr4::read();
+    unsafe {
+        Cr4::write(cr4 ^ Cr4Flags::PAGE_GLOBAL);
+        Cr4::write(cr4);
     }
 }
 
