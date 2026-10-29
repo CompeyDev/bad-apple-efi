@@ -1,4 +1,4 @@
-use core::ffi::c_int;
+use core::ffi::{c_int, CStr};
 use core::ptr::{self, NonNull};
 use core::time::Duration;
 use core::{mem, slice};
@@ -32,7 +32,18 @@ impl Vp9Decoder {
     pub fn send_packet(&mut self, packet: &Packet) -> Result<(), VideoError> {
         let (data, len) = (packet.data.as_ptr(), packet.data.len() as u32);
         self.pts = packet.pts;
-        unsafe { vpx_codec_decode(&mut self.ctx, data, len, ptr::null_mut(), 0) }.ok()
+        unsafe { vpx_codec_decode(&mut self.ctx, data, len, ptr::null_mut(), 0) }
+            .ok()
+            .inspect_err(|_| self.log_error_detail())
+    }
+
+    /// Logs the last libvpx error's details, if any.
+    fn log_error_detail(&self) {
+        let detail = unsafe { vpx_codec_error_detail(&self.ctx) };
+        if !detail.is_null() {
+            let detail = unsafe { CStr::from_ptr(detail) };
+            log::debug!(target: "libvpx", "{}", detail.to_string_lossy());
+        }
     }
 
     /// Copies out the most recently decoded frame, if successfully produced.

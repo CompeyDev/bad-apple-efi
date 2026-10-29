@@ -130,6 +130,8 @@ pub mod vpx {
         ) -> *const VpxImage;
 
         pub fn vpx_codec_destroy(ctx: *mut VpxCodecCtx) -> VpxStatus;
+
+        pub fn vpx_codec_error_detail(ctx: *const VpxCodecCtx) -> *const c_char;
     }
 }
 
