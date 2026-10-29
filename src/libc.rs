@@ -1,9 +1,9 @@
 use alloc::alloc::{alloc, dealloc, Layout};
 
-use core::ffi::*;
 use core::ptr;
 
-use nostd_printf::va_list;
+// Links the C `vsnprintf` for libc
+use nostd_printf as _;
 
 //
 // Minimal libc Implementation
@@ -190,39 +190,6 @@ pub unsafe extern "C" fn qsort(base: *mut u8, nmemb: usize, size: usize, compar:
             }
         }
     }
-}
-
-/// `libc::vsnprintf` implementation. 
-/// 
-/// Formats the string in `buf` in place, returning the number of bytes written
-/// and printing the formatted string to the serial output console.
-/// 
-/// ## Safety
-/// - `buf` must be a valid pointer to a region of at least `size` bytes
-/// - `format` must be a valid C string
-/// - `ap` must be a valid variardic list of exactly the number of expected
-///   formatting arguments in `buf`
-/// 
-/// ## Returns
-/// The size in bytes of the formatted string. Zero if `buf` and `format` is null
-/// or `size` is zero.
-#[no_mangle]
-#[rustfmt::skip]
-pub unsafe extern "C" fn vsnprintf(buf: *mut i8, size: u64, format: *const i8, ap: va_list) -> i32 {
-    if buf.is_null() || size == 0 || format.is_null() {
-        return 0;
-    }
-
-    let result = nostd_printf::vsnprintf(buf, size, format, ap);
-    if result > 0 {
-        if let Ok(s) = CStr::from_ptr(buf).to_str() {
-            if !s.is_empty() {
-                log::debug!(target: "libvpx", "{}", s);
-            }
-        }
-    }
-
-    result
 }
 
 //
