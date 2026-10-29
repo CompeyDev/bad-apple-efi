@@ -6,12 +6,17 @@ use uefi::proto::console::gop::{GraphicsOutput, Mode, PixelFormat};
 
 use crate::paging::{MemoryType, PageTables, SLOT_SIZE};
 use crate::pixel::Color;
+use double_buffer::DoubleBuffer;
+
+mod double_buffer;
 
 /// An abstraction around the low-level framebuffer for drawing graphics. Typically
 /// constructed by calling [`Display::open`] when boot services is available.
 #[derive(Debug)]
 pub struct Display<'a> {
     framebuffer: &'a mut [u32],
+    double_buffer: Option<DoubleBuffer>,
+
     pub width: usize,
     pub height: usize,
     stride: usize,
@@ -53,19 +58,32 @@ impl<'a> Display<'a> {
         }
 
         let mut framebuffer = gop.frame_buffer();
-        let (base, len) = (framebuffer.as_mut_ptr() as *mut u32, framebuffer.size() / 4);
+        let (base, size) = (framebuffer.as_mut_ptr() as *mut u32, framebuffer.size());
 
         log::info!("Display mode: {width}x{height}");
         log::debug!(
             "Picked mode out of {mode_count} modes: {:?} pixels, stride {stride}, {} KiB \
              framebuffer at {base:p}",
             mode.info().pixel_format(),
-            framebuffer.size() / 1024,
+            size / 1024,
         );
 
+        // The second page is after the framebuffer ends, in video memory
+        let page = stride * height;
+        let double_buffer = DoubleBuffer::new(height, page * 4);
+        let len = match double_buffer {
+            Some(_) => page * 2,
+            None => {
+                log::warn!("Display is not double buffered, expect some screen tearing");
+                size / 4
+            }
+        };
+
         Ok(Self {
-            // SAFETY: framebuffer stays valid even after boot services exiting
+            // SAFETY: framebuffer stays valid even after boot services exiting, and the second
+            // page fits in video memory
             framebuffer: unsafe { core::slice::from_raw_parts_mut(base, len) },
+            double_buffer,
             width,
             height,
             stride,
@@ -149,13 +167,21 @@ impl<'a> Display<'a> {
         }
     }
 
-    /// Writes the frame onto the display, one row at a time and skipping any stride padding.
+    /// Writes the frame onto the display, one row at a time and skipping any stride padding. If
+    /// double buffered, it is drawn to the hidden page instead and then shown instead.
     ///
     /// `pixels` are `width * height` values in the display's `0x00RRGGBB` format.
     pub fn blit(&mut self, pixels: &[u32]) {
-        let rows = self.framebuffer.chunks_mut(self.stride).zip(pixels.chunks(self.width));
+        let page = self.double_buffer.as_ref().map_or(0, DoubleBuffer::back);
+        let framebuffer = &mut self.framebuffer[page * self.stride * self.height..];
+
+        let rows = framebuffer.chunks_mut(self.stride).zip(pixels.chunks(self.width));
         for (dst, src) in rows {
             dst[..src.len()].copy_from_slice(src);
+        }
+
+        if let Some(double_buffer) = &mut self.double_buffer {
+            double_buffer.flip();
         }
     }
 }
