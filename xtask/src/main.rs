@@ -127,8 +127,6 @@ impl TaskRunner {
 
     pub fn task_clean(&self, cargo_args: &[String]) -> Result<()> {
         fs::remove_dir_all(".qemu")?;
-        fs::remove_file("bin/bad_apple.mp4")?;
-        fs::remove_file("bin/bad_apple.mid")?;
         self.cargo("clean", cargo_args)?;
         Ok(())
     }
