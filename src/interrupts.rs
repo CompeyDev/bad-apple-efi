@@ -4,6 +4,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use x86_64::instructions::interrupts;
 use x86_64::instructions::port::Port;
+use x86_64::registers::control::Cr2;
+use x86_64::structures::idt::{ExceptionVector, InterruptStackFrame};
+
+use crate::apic::ApicTimer;
+use crate::segments::DOUBLE_FAULT_IST;
 
 /// The global Interrupt Descriptor Table.
 pub static IDT: Idt = Idt::new();
@@ -65,6 +70,7 @@ impl Idt {
 
     pub fn load(&self) {
         unsafe { init_pic() };
+        self.register_exceptions();
 
         #[repr(C, packed)]
         struct Idtr {
@@ -83,15 +89,21 @@ impl Idt {
         }
     }
 
-    #[rustfmt::skip]
     pub fn register_handler(&self, vector: u8, handler: extern "C" fn()) {
+        self.set_gate(vector, handler as *const (), 0);
+    }
+
+    /// Points `vector` at `handler`, switching to the interrupt stack `ist` from the TSS if it's
+    /// not zero.
+    #[rustfmt::skip]
+    fn set_gate(&self, vector: u8, handler: *const (), ist: u8) {
         let handler_addr = handler as usize;
         let entries = self.entries.get();
         let entry = unsafe { &mut (*entries)[vector as usize] };
 
         entry.offset_low  = (handler_addr & 0xFFFF) as u16;          // address bits 0–15
         entry.selector    = 0x08;                                    // kernel 64-bit code segment
-        entry.ist         = 0;                                       // do not switch stacks
+        entry.ist         = ist;                                     // interrupt stack, 0 for current
         entry.attributes  = 0x8E;                                    // present | ring 0 | 64-bit interrupt gate
         entry.offset_mid  = ((handler_addr >> 16) & 0xFFFF) as u16;  // address bits 16–31
         entry.offset_high = (handler_addr >> 32) as u32;             // address bits 32–63
@@ -101,6 +113,81 @@ impl Idt {
 
 // SAFETY: IDT must only be modified in a single-threaded context during boot
 unsafe impl Sync for Idt {}
+
+//
+// CPU Exceptions
+//
+
+const DOUBLE_FAULT_VECTOR: u8 = 8;
+const GENERAL_PROTECTION_VECTOR: u8 = 13;
+const PAGE_FAULT_VECTOR: u8 = 14;
+
+/// Routes every vector of the [`Idt`] towards clousure-like handlers.
+///
+/// The left part of an arm can take two values in the form `<vector>, <ist>` to swap to a
+/// separate stack for the interrupt. The right part of an arm can take a `code` argument
+/// containing the error code.
+macro_rules! gates {
+    ($idt:expr; $($vector:expr $(, $ist:expr)? => |$($arg:ident),+| $body:expr),* $(,)?) => {
+        $($idt.set_gate($vector, gates!(@handler |$($arg),+| $body), gates!(@ist $($ist)?));)*
+    };
+    (@handler |$frame:ident| $body:expr) => {{
+        extern "x86-interrupt" fn handler($frame: InterruptStackFrame) { $body }
+        handler as *const ()
+    }};
+    (@handler |$frame:ident, $code:ident| $body:expr) => {{
+        extern "x86-interrupt" fn handler($frame: InterruptStackFrame, $code: u64) { $body }
+        handler as *const ()
+    }};
+    (@ist) => { 0 };
+    (@ist $ist:expr) => { $ist };
+}
+
+impl Idt {
+    /// Registers handlers which turn CPU exceptions into panics, instead of escalating into a
+    /// triple fault which silently resets the machine.
+    fn register_exceptions(&self) {
+        gates! { self;
+            // All general faults without a specific handler of its own
+            GENERAL_PROTECTION_VECTOR => |frame, code| general_protection(frame, code),
+            PAGE_FAULT_VECTOR => |frame, code| panic!(
+                "CPU exception: Page Fault at {:#x} accessing {:#x} (code {code:#x})",
+                frame.instruction_pointer,
+                Cr2::read_raw(),
+            ),
+
+            // Double faults can be raised due to stack overflows, so we give it a stack of its own
+            DOUBLE_FAULT_VECTOR, DOUBLE_FAULT_IST => |frame, _code| panic!(
+                "CPU exception: Double Fault at {:#x}",
+                frame.instruction_pointer,
+            ),
+
+            // Not a real exception, no-op
+            ApicTimer::SPURIOUS_VECTOR as u8 => |_frame| {},
+        }
+    }
+}
+
+/// Panics for a general protection fault.
+///
+/// This is raised by the CPU when it cannot locate a suitable IDT entry for a specific fault,
+/// along with a `code` which can be used to identify the original exception by its vector.
+fn general_protection(frame: InterruptStackFrame, code: u64) -> ! {
+    const IDT_BIT: u64 = 1 << 1;
+
+    let rip = frame.instruction_pointer;
+    if code & IDT_BIT == 0 {
+        // Regular general protection fault
+        panic!("CPU exception: General Protection at {rip:#x} (code {code:#x})");
+    }
+
+    // Raised due to missing handler for another fault
+    let vector = (code >> 3) as u8; // u8 is safe, only 256 IDT entries
+    match ExceptionVector::try_from(vector) {
+        Ok(exception) => panic!("Unhandled {exception:?} (vector {vector:#x}) at {rip:#x}"),
+        Err(_) => panic!("Unhandled interrupt (vector {vector:#x}) at {rip:#x}"),
+    }
+}
 
 //
 // Interrupt Request (IRQ)

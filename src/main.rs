@@ -1,5 +1,6 @@
 #![no_main]
 #![no_std]
+#![feature(abi_x86_interrupt)]
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("only x86_64 targets are supported");

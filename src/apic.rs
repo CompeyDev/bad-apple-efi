@@ -49,7 +49,7 @@ impl ApicTimer {
     }
 
     /// Spurious interrupt vector number
-    const SPURIOUS_VECTOR: u32 = 0xFF;
+    pub const SPURIOUS_VECTOR: u32 = 0xFF;
     /// APIC Software Enable bit
     const APIC_SW_ENABLE: u32 = 0x100;
     /// LVT Timer mask bit (disable interrupts)

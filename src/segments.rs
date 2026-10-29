@@ -1,5 +1,9 @@
 use core::arch::asm;
 use core::cell::UnsafeCell;
+use core::mem::size_of;
+
+use x86_64::structures::tss::TaskStateSegment;
+use x86_64::VirtAddr;
 
 //
 // Segment Selectors
@@ -11,13 +15,23 @@ pub const KERNEL_CODE_SELECTOR: u16 = 0x08;
 /// Kernel 64-bit data segment selector (GDT entry 2).
 pub const KERNEL_DATA_SELECTOR: u16 = 0x10;
 
+/// Task state segment selector (GDT entries 5 and 6).
+pub const TSS_SELECTOR: u16 = 0x28;
+
 //
 // Global Descriptor Table (GDT)
 //
 
 pub static GDT: Gdt = Gdt::new();
 
-const GDT_ENTRIES: usize = 5;
+const GDT_ENTRIES: usize = 7;
+
+pub const DOUBLE_FAULT_IST: u8 = 1;
+const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
+
+#[repr(align(16))]
+#[allow(dead_code)] // only its address is used
+struct Stack([u8; DOUBLE_FAULT_STACK_SIZE]);
 
 /// Represents an x86_64 GDT entry (8 bytes total).
 ///
@@ -98,16 +112,40 @@ impl GdtEntry {
             base_high: 0,
         }
     }
+
+    /// A 64-bit TSS descriptor, which takes up two entries since it holds a full address.
+    pub fn tss(tss: *const TaskStateSegment) -> [Self; 2] {
+        let base = tss as u64;
+        let low = Self {
+            limit_low: (size_of::<TaskStateSegment>() - 1) as u16,
+            base_low: base as u16,
+            base_mid: (base >> 16) as u8,
+            access: 0x89, // present, ring 0, available 64-bit TSS
+            flags_limit_high: 0,
+            base_high: (base >> 24) as u8,
+        };
+
+        // The upper 32 address bits go in the first 4 bytes of the second entry
+        let high =
+            Self { limit_low: (base >> 32) as u16, base_low: (base >> 48) as u16, ..Self::ZERO };
+        [low, high]
+    }
 }
 
 /// The Global Descriptor Table.
 pub struct Gdt {
     entries: UnsafeCell<[GdtEntry; GDT_ENTRIES]>,
+    tss: UnsafeCell<TaskStateSegment>,
+    double_fault_stack: UnsafeCell<Stack>,
 }
 
 impl Gdt {
     pub const fn new() -> Self {
-        Self { entries: UnsafeCell::new([GdtEntry::ZERO; GDT_ENTRIES]) }
+        Self {
+            entries: UnsafeCell::new([GdtEntry::ZERO; GDT_ENTRIES]),
+            tss: UnsafeCell::new(TaskStateSegment::new()),
+            double_fault_stack: UnsafeCell::new(Stack([0; DOUBLE_FAULT_STACK_SIZE])),
+        }
     }
 
     pub unsafe fn load(&self) {
@@ -121,6 +159,13 @@ impl Gdt {
         (*entries_ptr)[2] = GdtEntry::kernel_data();
         (*entries_ptr)[3] = GdtEntry::user_code();
         (*entries_ptr)[4] = GdtEntry::user_data();
+
+        // The stack grows downwards, we point the TSS to the end of it
+        let tss = self.tss.get();
+        let stack_end = self.double_fault_stack.get().add(1);
+        (*tss).interrupt_stack_table[usize::from(DOUBLE_FAULT_IST - 1)] =
+            VirtAddr::from_ptr(stack_end);
+        [(*entries_ptr)[5], (*entries_ptr)[6]] = GdtEntry::tss(tss);
 
         #[repr(C, packed)]
         struct Gdtr {
@@ -158,6 +203,8 @@ impl Gdt {
             tmp = out(reg) _,
             options(preserves_flags),
         );
+
+        asm!("ltr {:x}", in(reg) TSS_SELECTOR, options(nostack, preserves_flags));
     }
 }
 

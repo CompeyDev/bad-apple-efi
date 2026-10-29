@@ -33,6 +33,12 @@ impl UefiAllocatorManager {
     pub unsafe fn init() -> (MemoryRegion<MemoryMapOwned>, PageTables) {
         let mmap = exit_boot_services(None);
         log::debug!("Exited boot services");
+
+        // Interrupts
+        GDT.load();
+        IDT.load();
+        log::debug!("Loaded the GDT and IDT");
+
         let region = Self::find_memory_region(mmap).expect("No usable memory found in memory map");
 
         // Heap setup
@@ -46,11 +52,6 @@ impl UefiAllocatorManager {
         let dma_pool_size = 1 << 21; // 2 MiB
         let dma_pool = dma::init(&mut tables, dma_pool_size);
         log::debug!("DMA pool at {dma_pool:p}, {} KiB uncacheable", dma_pool_size >> 10);
-
-        // Interrupts
-        GDT.load();
-        IDT.load();
-        log::debug!("Loaded the GDT and IDT");
 
         (region, tables)
     }
