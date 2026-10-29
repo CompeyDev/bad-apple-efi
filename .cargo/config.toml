@@ -15,5 +15,10 @@ rustflags = [
     "-Zshare-generics=no",
 ]
 
+[env]
+# `nostd-printf` does not specify a compiler, so `cc` just uses the host compiler, which does not emit
+# proper COFF data. We need to override the compiler.
+CC_x86_64_unknown_uefi = "clang"
+
 [alias]
 xtask = "run --quiet --release --target x86_64-unknown-linux-gnu --manifest-path ./xtask/Cargo.toml --"
