@@ -10,7 +10,8 @@ extern crate alloc;
 use core::ffi::c_void;
 
 use log::{info, warn};
-use uefi::{boot, table, Handle, Status};
+use uefi::runtime::ResetType;
+use uefi::{boot, runtime, table, Handle, Status};
 
 use crate::apic::APIC_TIMER;
 use crate::display::Display;
@@ -66,7 +67,7 @@ unsafe extern "efiapi" fn main() {
     )
 }
 
-fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void) -> Status {
+fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void) -> ! {
     unsafe {
         boot::set_image_handle(internal_image_handle);
         table::set_system_table(internal_system_table.cast());
@@ -124,7 +125,8 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
             x86_64::instructions::hlt()
         }
     } else {
-        Status::SUCCESS
+        // Boot services are gone, so we can't return to the firmware, but runtime services are left
+        runtime::reset(ResetType::SHUTDOWN, Status::SUCCESS, None)
     }
 }
 
