@@ -223,6 +223,11 @@ impl InterruptSemaphore {
         }
     }
 
+    /// Returns whether the interrupt has completed.
+    pub fn is_completed(&self) -> bool {
+        self.completed.load(Ordering::SeqCst)
+    }
+
     /// Signal that the interrupt has completed. Called from interrupt handler.
     #[allow(unused)]
     pub fn release(&self) {

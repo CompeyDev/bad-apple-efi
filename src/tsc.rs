@@ -70,6 +70,16 @@ impl Tsc {
         Some(duration.as_secs() * hz + subsec)
     }
 
+    /// Spins until `done` returns true or the TSC reaches `deadline` ricks, returning whether 
+    /// it is done.
+    pub fn spin_until(&self, deadline: u64, done: impl Fn() -> bool) -> bool {
+        while !done() && self.now() < deadline {
+            core::hint::spin_loop();
+        }
+        
+        done()
+    }
+
     /// Finds the frequency and stores it, returning it.
     ///
     /// A chain of three methods are used (in order of preference): CPUID to ask the hypervisor
@@ -243,8 +253,20 @@ impl PitMeasurement {
     }
 
     /// Wait until the interrupt for capturing the TSC has been handled.
+    ///
+    /// ## Errors
+    /// Panics if the interrupt never arrives. Make sure the PIC is rounted to LAPIC.
     fn wait_for_capture(&self) {
-        self.interrupt.wait();
+        const TIMEOUT_TICKS: u64 = 10_000_000_000; // TSC not calibrated yet, use ticks instead of time
+
+        let deadline = TSC.now() + TIMEOUT_TICKS;
+
+        // Spin instead of halting, so we can give up if the interrupt never arrives
+        interrupts::enable();
+        let arrived = TSC.spin_until(deadline, || self.interrupt.is_completed());
+        interrupts::disable();
+
+        assert!(arrived, "PIT interrupt never arrived, so the TSC can't be calibrated");
     }
 
     /// Registers an interrupt handler at IRQ0 which captures the TSC.

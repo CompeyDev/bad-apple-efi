@@ -54,6 +54,8 @@ impl ApicTimer {
     const APIC_SW_ENABLE: u32 = 0x100;
     /// LVT Timer mask bit (disable interrupts)
     const LVT_MASKED: u32 = 0x10000;
+    /// LVT ExtINT delivery mode (virtual wire)
+    const LVT_EXTINT: u32 = 0b111 << 8;
     /// LVT Timer mode bits for TSC deadline mode
     const LVT_TSC_DEADLINE: u32 = 0b10 << 17;
     /// `IA32_TSC_DEADLINE` MSR, which fires the timer when the TSC reaches its value
@@ -84,6 +86,12 @@ impl ApicTimer {
         (*LAPIC_BASE + 0x320) as *mut u32
     }
 
+    /// Local Vector Table LINT0 Register, where the PIC is connected
+    #[inline(always)]
+    pub fn lapic_lvt_lint0() -> *mut u32 {
+        (*LAPIC_BASE + 0x350) as *mut u32
+    }
+
     /// Initial Count Register (Timer count)
     #[inline(always)]
     pub fn lapic_icr() -> *mut u32 {
@@ -112,6 +120,11 @@ impl ApicTimer {
             Self::lapic_svr().write_volatile(Self::APIC_SW_ENABLE | Self::SPURIOUS_VECTOR);
             Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED);
             Self::lapic_eoi().write_volatile(0);
+
+            // The PIT calibration of the TSC relies on the PIC's IRQ0, which firmware doesn't
+            // always route it to us by default. Our remapped PIC needs to do the routing instead,
+            // therefore we enable the ExtINT mode.
+            Self::lapic_lvt_lint0().write_volatile(Self::LVT_EXTINT);
         }
 
         Self::set_divisor(divisor);
