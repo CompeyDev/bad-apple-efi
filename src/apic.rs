@@ -98,12 +98,14 @@ impl ApicTimer {
 
     /// Calibrate and initialize the APIC timer by measuring its actual frequency.
     ///
-    /// This function uses the PIT (Programmable Interval Timer) to measure the
-    /// TSC frequency, then uses the TSC to calibrate the APIC timer.
+    /// This function calibrates the TSC first, see [`Tsc::calibrate`], then uses the TSC
+    /// to calibrate the APIC timer.
     ///
     /// The divisor determines the timer frequency. The divisor must be a power
     /// of two from 1 to 128 (i.e., 1, 2, 4, 8, 16, 32, 64, or 128). For high
     /// precision, 16 is commonly used.
+    ///
+    /// [`Tsc::calibrate`]: crate::tsc::Tsc::calibrate
     pub fn calibrate(&self, divisor: u32) {
         // Enable APIC with spurious interrupt vector
         unsafe {

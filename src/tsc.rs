@@ -1,5 +1,5 @@
 use core::arch::naked_asm;
-use core::arch::x86_64::{__cpuid, _rdtsc};
+use core::arch::x86_64::{CpuidResult, __cpuid, _rdtsc};
 use core::fmt::{self, Formatter};
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -70,12 +70,80 @@ impl Tsc {
         Some(duration.as_secs() * hz + subsec)
     }
 
+    /// Finds the frequency and stores it, returning it.
+    ///
+    /// A chain of three methods are used (in order of preference): CPUID to ask the hypervisor
+    /// directly, using the core crystal ratio on Intel CPUs or finally PIT calibration.
+    pub fn calibrate(&self) -> u64 {
+        let (hz, source) = Self::hypervisor_hz()
+            .map(|hz| (hz, "hypervisor CPUID"))
+            .or_else(|| Self::crystal_hz().map(|hz| (hz, "CPUID crystal ratio")))
+            .unwrap_or_else(|| (Self::measure_pit(), "PIT"));
+
+        self.hz.store(hz, Ordering::Relaxed);
+        log::debug!("TSC runs at {hz} Hz, from the {source}");
+        hz
+    }
+
+    //
+    // Calibration Sources
+    //
+
+    /// Asks the hypervisor itself for the TSC frequency using its timing leaf. Exposed by QEMU (KVM)
+    /// and VMWare.
+    fn hypervisor_hz() -> Option<u64> {
+        const HYPERVISOR_BIT: u32 = 1 << 31;
+        const TIMING_LEAF: u32 = 0x4000_0010;
+
+        let present = __cpuid(1).ecx & HYPERVISOR_BIT != 0;
+        let khz = (present && __cpuid(0x4000_0000).eax >= TIMING_LEAF)
+            .then(|| __cpuid(TIMING_LEAF).eax)
+            .filter(|&khz| khz != 0)?;
+
+        Some(u64::from(khz) * 1000)
+    }
+
+    /// Queries the frequency from the TSC to core crystal ratio, only present on Intel CPUs since
+    /// Skylake.
+    fn crystal_hz() -> Option<u64> {
+        let ratio = Self::intel_leaf(0x15)?;
+        let (denominator, numerator) = (u64::from(ratio.eax), u64::from(ratio.ebx));
+        if denominator == 0 || numerator == 0 {
+            return None;
+        }
+
+        // If the crystal's frequency cannot be queried, calculate it from the base frequency
+        let crystal = match u64::from(ratio.ecx) {
+            0 => Self::base_hz()? * denominator / numerator,
+            crystal => crystal,
+        };
+
+        Some(crystal * numerator / denominator)
+    }
+
+    /// Returns the CPU's base frequency. Can be used as a guess for the TSC frequency, which sometimes
+    /// runs at the same frequency.
+    fn base_hz() -> Option<u64> {
+        let mhz = Self::intel_leaf(0x16)?.eax;
+        (mhz != 0).then(|| u64::from(mhz) * 1_000_000)
+    }
+
+    /// Reads a CPUID leaf only if the CPU is Intel and has it.
+    fn intel_leaf(leaf: u32) -> Option<CpuidResult> {
+        // The vendor string is split across ebx, edx and ecx
+        let vendor = __cpuid(0);
+        let id = [vendor.ebx, vendor.edx, vendor.ecx].map(u32::to_le_bytes);
+        let is_intel = id.as_flattened() == b"GenuineIntel";
+
+        (is_intel && vendor.eax >= leaf).then(|| __cpuid(leaf))
+    }
+
     /// Measures the frequency using PIT channel 0 interrupt, and returns it.
     ///
     /// PIT channel 0 is connected to IRQ0 (vector 0x20 after PIC remap). It is programmed
     /// to fire an interrupt after 10ms and measure TSC ticks.
     #[rustfmt::skip]
-    pub fn calibrate(&self) -> u64 {
+    fn measure_pit() -> u64 {
         const PIT_FREQUENCY: u32 = 1_193_182;
         const CALIBRATION_MS: u32 = 10;
         const PIT_DIVISOR: u32 = PIT_FREQUENCY / (1000 / CALIBRATION_MS);
@@ -88,7 +156,7 @@ impl Tsc {
         let mut pit_channel0 = Port::<u8>::new(0x40);
         let mut pit_command = Port::<u8>::new(0x43);
 
-        let hz = unsafe {
+        unsafe {
             // Disable interrupts during calibration and register our capture handler
             interrupts::disable();
             PitMeasurement::register_capture_handler();
@@ -120,7 +188,7 @@ impl Tsc {
             pit_channel0.write(((PIT_DIVISOR >> 8) & 0xFF) as u8); // divisor MSB
 
             // Capture TSC start
-            let tsc_start = self.now();
+            let tsc_start = TSC.now();
             pic_data.write(master_mask & 0xFE); // unmask bit 0 to start timer
 
             // Enable interrupts and wait for PIT
@@ -131,11 +199,7 @@ impl Tsc {
             let tsc_end = PIT_MEASUREMENT.ticks();
             let tsc_ticks = tsc_end.wrapping_sub(tsc_start);
             (tsc_ticks * 1000) / CALIBRATION_MS as u64
-        };
-
-        self.hz.store(hz, Ordering::Relaxed);
-        log::debug!("TSC measured at {hz} Hz over a {CALIBRATION_MS}ms PIT interval");
-        hz
+        }
     }
 }
 
