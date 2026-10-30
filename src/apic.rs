@@ -6,7 +6,7 @@ use core::time::Duration;
 use x86_64::instructions::interrupts;
 use x86_64::registers::model_specific::{ApicBase, ApicBaseFlags, Msr};
 
-use crate::interrupts::{InterruptSemaphore, IDT};
+use crate::interrupts::{InterruptSemaphore, NakedHandler, IDT};
 use crate::tsc::TSC;
 
 static LAPIC_BASE: spin::Lazy<u32> = spin::Lazy::new(|| {
@@ -253,7 +253,7 @@ impl ApicTimer {
             );
         }
 
-        IDT.register_handler(Self::TIMER_VECTOR, timer_interrupt_handler);
+        IDT.register_handler(Self::TIMER_VECTOR, timer_interrupt_handler as NakedHandler);
         TIMER_SEMAPHORE.reset();
         f();
 

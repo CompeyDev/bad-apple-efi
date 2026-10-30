@@ -1,6 +1,6 @@
 #![no_main]
 #![no_std]
-#![feature(abi_x86_interrupt)]
+#![feature(abi_x86_interrupt, fn_ptr_trait)]
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("only x86_64 targets are supported");
@@ -86,6 +86,7 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
     // display + memory
     let mut display = Display::open().expect("Failed to open display");
     let (region, mut tables) = unsafe { UefiAllocatorManager::init() };
+    CONSOLE.enable_interrupts();
 
     // timers
     APIC_TIMER.calibrate(16);
@@ -118,6 +119,9 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
     if let Some(time) = TSC.to_duration(TSC.now() - start) {
         info!("Playback finished in {time:.2?}");
     }
+
+    // Flush any queued logs before we shut down or disable interrupts
+    log::logger().flush();
 
     if cfg!(debug_assertions) {
         // Hang indefinitely in debug mode

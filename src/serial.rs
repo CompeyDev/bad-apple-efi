@@ -1,29 +1,58 @@
 use core::fmt::{self, Display, Formatter, Write};
+use core::time::Duration;
 
+use heapless::Deque;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use owo_colors::{OwoColorize, Style};
 use spin::Mutex;
 use uart_16550::backend::PioBackend;
-use uart_16550::spec::{calc_baud_rate, CLK_FREQUENCY_HZ};
+use uart_16550::spec::registers::IER;
+use uart_16550::spec::{calc_baud_rate, CLK_FREQUENCY_HZ, FIFO_SIZE};
 use uart_16550::{BaudRate, Config, Uart16550, Uart16550Tty};
 use uefi::boot::{self, Tpl};
+use x86_64::instructions::interrupts;
+use x86_64::structures::idt::InterruptStackFrame;
 
+use crate::apic::APIC_TIMER;
+use crate::interrupts::{pic, X86Handler, IDT};
 use crate::tsc::TSC;
 
 const COM1: u16 = 0x3F8;
+const COM1_IRQ: u8 = 4;
 const DEFAULT_BAUD_RATE: BaudRate = BaudRate::Baud115200;
 const DEFAULT_LEVEL: LevelFilter = LevelFilter::Debug;
+
+/// Size of the queue logs wait in while COM1 sends them (~150 lines).
+const QUEUE_SIZE: usize = 16 * 1024;
+const FIFO_SEND_TIME: Duration = Duration::from_micros(
+    // UART: 10 bits per byte (start, 8 data and stop bits).
+    (FIFO_SIZE * 10) as u64 * 1_000_000 / DEFAULT_BAUD_RATE.to_integer() as u64,
+);
 
 /// The global serial console instance.
 pub static CONSOLE: SerialConsole = SerialConsole::new();
 
 pub struct SerialConsole {
-    uart: Mutex<Option<Uart16550Tty<PioBackend>>>,
+    // NOTE:
+    // Once interrupts are enabled, the lock is also taken by COM1's interrupt handler, so
+    // it must only be held with interrupts disabled, otherwise the handler would deadlock
+    port: Mutex<Option<SerialPort>>,
+}
+
+/// The COM1 UART, and the logs queued for it.
+struct SerialPort {
+    uart: Uart16550Tty<PioBackend>,
+    /// Bytes waiting to be sent, consumed by COM1's interrupt
+    queue: Deque<u8, QUEUE_SIZE>,
+    /// Whether logs are queued using interrupts
+    interrupts: bool,
+    /// Logs dropped since the queue was last full
+    dropped: usize,
 }
 
 impl SerialConsole {
     const fn new() -> Self {
-        Self { uart: Mutex::new(None) }
+        Self { port: Mutex::new(None) }
     }
 
     /// Initializes a logger using the COM1 UART serial port. Must be called before exiting
@@ -59,7 +88,14 @@ impl SerialConsole {
         drop(tpl); // drop priority back to APPLICATION
 
         // Register the UART instance and logger globally
-        *self.uart.lock() = present.then(|| Uart16550Tty::from_inner(uart));
+        if present {
+            *self.port.lock() = Some(SerialPort {
+                uart: Uart16550Tty::from_inner(uart),
+                queue: Deque::new(),
+                interrupts: false,
+                dropped: 0,
+            });
+        }
 
         if log::set_logger(self).is_ok() {
             log::set_max_level(
@@ -80,12 +116,34 @@ impl SerialConsole {
         }
     }
 
+    /// Enables interrupts for the console, i.e., logs are queued in the backgroudn rather than
+    /// blocking for writes.
+    ///
+    /// ## Safety
+    /// Must be called after boot services has been exited, since the firmware also drives its
+    /// own COM1 and PIC, after loading the IDT.
+    pub fn enable_interrupts(&self) {
+        IDT.register_handler(pic::VECTOR_OFFSET + COM1_IRQ, com1_interrupt as X86Handler);
+
+        interrupts::without_interrupts(|| {
+            let mut guard = self.port.lock();
+            let Some(port) = guard.as_mut() else { return };
+
+            port.uart.inner_mut().enable_interrupts(IER::THR_EMPTY);
+            port.interrupts = true;
+            pic::unmask(COM1_IRQ);
+        });
+    }
+
     /// Handles panics by bypassing the logging facade, since the logger could also be an origin
     /// of the panic.
     pub(crate) fn write_panic(&self, info: &core::panic::PanicInfo) {
-        // If the lock is held, or is Some, that means UART was initialized previously
-        if !self.uart.try_lock().is_none_or(|uart| uart.is_some()) {
-            return;
+        interrupts::disable();
+
+        // If the lock is held, or the port is Some, that means it was initialized already
+        if let Some(mut guard) = self.port.try_lock() {
+            let Some(port) = guard.as_mut() else { return };
+            port.drain();
         }
 
         // We construct a new TTY instance on the fly since the panic could have been triggered
@@ -132,13 +190,122 @@ impl Log for SerialConsole {
             return;
         }
 
-        let mut guard = self.uart.lock();
-        let Some(uart) = guard.as_mut() else { return };
+        interrupts::without_interrupts(|| {
+            let mut guard = self.port.lock();
+            let Some(port) = guard.as_mut() else { return };
 
-        let _ = Self::write_record(uart, record);
+            if port.interrupts {
+                port.queue(record);
+            } else {
+                let _ = Self::write_record(&mut port.uart, record);
+            }
+        });
     }
 
-    fn flush(&self) {}
+    /// Waits until every queued log is sent.
+    fn flush(&self) {
+        let send = || self.port.lock().as_mut().is_none_or(SerialPort::send_rest);
+        while !interrupts::without_interrupts(send) {
+            // Sleep roughly how long a send takes in case the interrupt hasn't reached us yet
+            APIC_TIMER.sleep(FIFO_SEND_TIME);
+        }
+    }
+}
+
+impl SerialPort {
+    /// Queues a log write, and sends it to COM1 if it is idle.
+    ///
+    /// If the queue is full, the log is dropped.
+    fn queue(&mut self, record: &Record) {
+        let len = self.queue.len();
+        match self.try_queue(record) {
+            Ok(()) => self.dropped = 0,
+            Err(_) => {
+                self.queue.truncate(len);
+                self.dropped += 1;
+            }
+        }
+
+        self.send();
+    }
+
+    /// Tries to log `record` if the queue isn't full, otherwise logs a warning about the dropped log.
+    fn try_queue(&mut self, record: &Record) -> fmt::Result {
+        self.queue_dropped()?; // no log if nothing was dropped
+        SerialConsole::write_record(&mut QueueWriter(&mut self.queue), record)
+    }
+
+    /// Queues a warning about logs dropped since the queue was last full, if any.
+    fn queue_dropped(&mut self) -> fmt::Result {
+        match self.dropped {
+            0 => Ok(()),
+            dropped => SerialConsole::write_record(
+                &mut QueueWriter(&mut self.queue),
+                &Record::builder()
+                    .level(Level::Warn)
+                    .target(module_path!())
+                    .args(format_args!("{dropped} logs were dropped, since the queue was full"))
+                    .build(),
+            ),
+        }
+    }
+
+    /// Writes the queued bytes into COM1's FIFO. Only writes as many as possible until it is full.
+    fn send(&mut self) {
+        let (front, _) = self.queue.as_slices();
+        let sent = self.uart.inner_mut().send_bytes(front);
+        for _ in 0..sent {
+            self.queue.pop_front();
+        }
+    }
+
+    /// Writes all queued bytes, blocking if COM1 is busy.
+    fn drain(&mut self) {
+        while !self.send_rest() {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Sends as much as fits into COM1's FIFO, returning whether everything has been sent.
+    fn send_rest(&mut self) -> bool {
+        // Only report the dropped logs warning once there is enough room for it
+        if self.queue.is_empty() && self.dropped > 0 && self.queue_dropped().is_ok() {
+            self.dropped = 0;
+        }
+
+        self.send();
+        self.queue.is_empty()
+    }
+}
+
+/// Feeds COM1's FIFO from the queue when it is empty.
+extern "x86-interrupt" fn com1_interrupt(_frame: InterruptStackFrame) {
+    if let Some(port) = CONSOLE.port.lock().as_mut() {
+        port.uart.inner_mut().isr(); // indicate interrupt was received
+        port.send();
+    }
+
+    pic::end_of_interrupt();
+}
+
+/// Writes bytes into a queue rather than sending to hardware directly.
+///
+/// Translates newlines for terminals, similar to [`Uart16550Tty`].
+struct QueueWriter<'a>(&'a mut Deque<u8, QUEUE_SIZE>);
+
+impl Write for QueueWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for byte in s.bytes() {
+            if byte == b'\n' {
+                // Return carriage after newlines
+                self.0.push_back(b'\r').map_err(|_| fmt::Error)?;
+            }
+
+            self.0.push_back(byte).map_err(|_| fmt::Error)?;
+        }
+
+        Ok(())
+    }
 }
 
 /// A [`TSC`] reading, shown at the start of each log record.

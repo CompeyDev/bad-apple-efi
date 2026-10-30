@@ -8,7 +8,7 @@ use core::time::Duration;
 use x86_64::instructions::interrupts;
 use x86_64::instructions::port::Port;
 
-use crate::interrupts::{InterruptSemaphore, IDT};
+use crate::interrupts::{InterruptSemaphore, NakedHandler, IDT};
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
@@ -313,6 +313,6 @@ impl PitMeasurement {
             );
         }
 
-        IDT.register_handler(0x20, irq_handler)
+        IDT.register_handler(0x20, irq_handler as NakedHandler)
     }
 }

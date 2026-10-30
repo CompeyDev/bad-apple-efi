@@ -1,9 +1,9 @@
 use core::arch::asm;
 use core::cell::UnsafeCell;
+use core::marker::FnPtr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use x86_64::instructions::interrupts;
-use x86_64::instructions::port::Port;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{ExceptionVector, InterruptStackFrame};
 
@@ -58,6 +58,17 @@ impl IdtEntry {
     }
 }
 
+/// An `#[unsafe(naked)]` handler, which must save registers and return with `iretq` itself.
+pub type NakedHandler = extern "C" fn();
+/// A handler using the `x86-interrupt` ABI,.
+pub type X86Handler = extern "x86-interrupt" fn(InterruptStackFrame);
+
+/// A marker trait to represent functions an IDT can reference.
+pub trait InterruptHandler: FnPtr {}
+
+impl InterruptHandler for NakedHandler {}
+impl InterruptHandler for X86Handler {}
+
 /// The Interrupt Descriptor Table.
 pub struct Idt {
     entries: UnsafeCell<[IdtEntry; IDT_ENTRIES]>,
@@ -69,7 +80,7 @@ impl Idt {
     }
 
     pub fn load(&self) {
-        unsafe { init_pic() };
+        unsafe { pic::init() };
         self.register_exceptions();
 
         #[repr(C, packed)]
@@ -89,8 +100,8 @@ impl Idt {
         }
     }
 
-    pub fn register_handler(&self, vector: u8, handler: extern "C" fn()) {
-        self.set_gate(vector, handler as *const (), 0);
+    pub fn register_handler(&self, vector: u8, handler: impl InterruptHandler) {
+        self.set_gate(vector, handler.addr(), 0);
     }
 
     /// Points `vector` at `handler`, switching to the interrupt stack `ist` from the TSS if it's
@@ -162,8 +173,9 @@ impl Idt {
                 frame.instruction_pointer,
             ),
 
-            // Not a real exception, no-op
+            // Not real exceptions, no-op
             ApicTimer::SPURIOUS_VECTOR as u8 => |_frame| {},
+            pic::SPURIOUS_VECTOR => |_frame| {},
         }
     }
 }
@@ -249,32 +261,55 @@ impl InterruptSemaphore {
 // Programmable Interrupt Controller (PIC)
 //
 
-/// Initialize the PIC and mask all IRQs for safe APIC operation.
-#[rustfmt::skip]
-pub unsafe fn init_pic() {
-    let mut master_command = Port::<u8>::new(0x20);
-    let mut master_data = Port::<u8>::new(0x21);
-    let mut slave_command = Port::<u8>::new(0xA0);
-    let mut slave_data = Port::<u8>::new(0xA1);
+pub mod pic {
+    use x86_64::instructions::port::Port;
 
-    // ICW1: initialize
-    master_command.write(0x11); // master: init + ICW4 expected
-    slave_command.write(0x11);  // slave:  init + ICW4 expected
+    /// The vector of the master PIC's IRQ0.
+    pub const VECTOR_OFFSET: u8 = 0x20;
+    /// The vector the master PIC raises for spurious IRQs (IRQ7).
+    pub const SPURIOUS_VECTOR: u8 = VECTOR_OFFSET + 7;
 
-    // ICW2: vector offsets
-    master_data.write(0x20);    // master: IRQ[0-7]  = vectors 20h-27h
-    slave_data.write(0x28);     // slave:  IRQ[8-15] = vectors 28h-2Fh
+    /// Unmasks an IRQ of the master PIC.
+    pub fn unmask(irq: u8) {
+        let mut data = Port::<u8>::new(0x21);
+        unsafe {
+            let mask = data.read();
+            data.write(mask & !(1 << irq));
+        }
+    }
 
-    // ICW3: cascade
-    master_data.write(0x04);    // master: slave on IRQ2
-    slave_data.write(0x02);     // slave:  casade ID 2
+    /// Notifies the IRQ of the master PIC that an interrupt has been processed.
+    pub fn end_of_interrupt() {
+        unsafe { Port::<u8>::new(0x20).write(0x20) };
+    }
 
-    // ICW4: set both master and slave modes to 8086
-    master_data.write(0x01);    // master
-    slave_data.write(0x01);     // slave
+    /// Initialize the PIC and mask all IRQs for safe APIC operation.
+    #[rustfmt::skip]
+    pub unsafe fn init() {
+        let mut master_command = Port::<u8>::new(0x20);
+        let mut master_data = Port::<u8>::new(0x21);
+        let mut slave_command = Port::<u8>::new(0xA0);
+        let mut slave_data = Port::<u8>::new(0xA1);
 
-    // Mask all IRQs
-    master_data.write(0xFF);    // master
-    slave_data.write(0xFF);     // slave
-    master_command.write(0x60); // send EOI to all pending IRQs
+        // ICW1: initialize
+        master_command.write(0x11); // master: init + ICW4 expected
+        slave_command.write(0x11);  // slave:  init + ICW4 expected
+
+        // ICW2: vector offsets
+        master_data.write(0x20);    // master: IRQ[0-7]  = vectors 20h-27h
+        slave_data.write(0x28);     // slave:  IRQ[8-15] = vectors 28h-2Fh
+
+        // ICW3: cascade
+        master_data.write(0x04);    // master: slave on IRQ2
+        slave_data.write(0x02);     // slave:  casade ID 2
+
+        // ICW4: set both master and slave modes to 8086
+        master_data.write(0x01);    // master
+        slave_data.write(0x01);     // slave
+
+        // Mask all IRQs
+        master_data.write(0xFF);    // master
+        slave_data.write(0xFF);     // slave
+        master_command.write(0x60); // send EOI to all pending IRQs
+    }
 }
