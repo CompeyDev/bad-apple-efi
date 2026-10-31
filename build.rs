@@ -87,6 +87,7 @@ fn build_libvpx(out_dir: &Path) -> Result {
         .env("CC", "clang")
         .env("AR", "llvm-ar")
         .env("AS", "nasm")
+        .env("LD", "clang -target x86_64-windows-msvc -fuse-ld=lld -nostdlib -Wl,-entry:main")
         .make_args(vec!["target=libs".into()])
         .make_target("libvpx_g.a")
         .build();
