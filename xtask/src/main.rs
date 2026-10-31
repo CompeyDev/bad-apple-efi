@@ -9,6 +9,9 @@ use std::process::Command;
 const CARGO_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 const CRATE_NAME: &str = "bad-apple";
 const PRINT_PREFIX: &str = "[xtask]";
+const QEMU: &str = "qemu-system-x86_64";
+#[cfg(target_os = "macos")]
+const MACOS_FIRMWARE: &str = "../share/qemu/edk2-x86_64-code.fd"; // relative to dir with the binary
 
 // TODO(nick): auto-generate these without introducing another crate.
 const HELP_TEXT: &str = "\
@@ -132,6 +135,10 @@ impl TaskRunner {
     }
 
     pub fn task_qemu_run(&self, cargo_args: &[String], qemu_args: &[String]) -> Result<()> {
+        if cfg!(not(any(target_os = "macos", target_os = "linux"))) {
+            panic!("running QEMU is unsupported on this host");
+        }
+
         // The guest behaves specially under QEMU, e.g. picking the smallest display mode, and
         // panics exit the emulator instead of hanging
         let mut build_args = vec![String::from("--features"), String::from("qemu")];
@@ -144,28 +151,46 @@ impl TaskRunner {
 
         self.stdout("running project in QEMU");
 
-        let ok = Command::new("qemu-system-x86_64")
-            .arg("-nodefaults") // flag
-            .args(["-bios", "/usr/share/ovmf/x64/OVMF.4m.fd"])
+        let mut qemu = Command::new(QEMU);
+        qemu.arg("-nodefaults") // flag
             .args(["-cpu", "max,+invtsc"]) // QEMU hides the host's invariant TSC by default
             .args(["-machine", "q35"])
-            .arg("-enable-kvm") // flag
-            .args(["-audiodev", "pipewire,id=speaker"])
-            .args(["-audiodev", "pipewire,id=hda0"])
             .args(["-machine", "pcspk-audiodev=speaker"])
             .args(["-device", "intel-hda"])
             .args(["-device", "hda-output,audiodev=hda0"])
             .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]) // exit on guest panic
             .args(["-vga", "std"])
-            .args(["-machine", "q35,accel=kvm:tcg"])
             .args(["-m", "512M"])
             .args(["-drive", "format=raw,file=fat:rw:.qemu"])
             .args(["-serial", "stdio"])
-            .args(["-display", "gtk,gl=on"]) // software scaling makes audio stutter
-            .args(["-monitor", "vc"])
-            .args(qemu_args)
-            .status()?
-            .success();
+            .args(["-monitor", "vc"]);
+
+        #[cfg(target_os = "macos")]
+        {
+            // Homebrew's QEMU only ships the firmware's code, which can't be loaded as BIOS
+            let path = env::var_os("PATH").unwrap_or_default();
+            let bin = env::split_paths(&path).find(|dir| dir.join(QEMU).is_file());
+            let firmware = bin.ok_or("could not find QEMU")?.join(MACOS_FIRMWARE);
+            let drive = format!("if=pflash,format=raw,readonly=on,file={}", firmware.display());
+
+            qemu.args(["-drive", &drive])
+                .args(["-machine", "q35,accel=hvf:tcg"]) // x86 guests are only accelerated on Intel Macs
+                .args(["-audiodev", "coreaudio,id=speaker"])
+                .args(["-audiodev", "coreaudio,id=hda0"])
+                .args(["-display", "cocoa"]);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            qemu.args(["-bios", "/usr/share/ovmf/x64/OVMF.4m.fd"])
+                .arg("-enable-kvm") // flag
+                .args(["-machine", "q35,accel=kvm:tcg"])
+                .args(["-audiodev", "pipewire,id=speaker"])
+                .args(["-audiodev", "pipewire,id=hda0"])
+                .args(["-display", "gtk,gl=on"]); // software scaling makes audio stutter
+        }
+
+        let ok = qemu.args(qemu_args).status()?.success();
 
         if !ok { Err("QEMU command failed".into()) } else { Ok(()) }
     }
