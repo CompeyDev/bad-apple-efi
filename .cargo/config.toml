@@ -21,4 +21,4 @@ rustflags = [
 CC_x86_64_unknown_uefi = "clang"
 
 [alias]
-xtask = "run --quiet --release --target x86_64-unknown-linux-gnu --manifest-path ./xtask/Cargo.toml --"
+xtask = "run --quiet --release --target host-tuple --manifest-path ./xtask/Cargo.toml --"
