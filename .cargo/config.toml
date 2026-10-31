@@ -1,6 +1,8 @@
 [build]
 target = "x86_64-unknown-uefi"
 
+# Only for the UEFI target, so `xtask` builds with the host's own features
+[target.x86_64-unknown-uefi]
 rustflags = [
     # NOTE: The prebuilt standard libraries and compiler builtins stay soft-float, so anything
     # which passes floats or returns 128-bit integers have a different ABI than our force enabled
