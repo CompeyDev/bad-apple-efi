@@ -1,20 +1,10 @@
 #![cfg(target_arch = "x86_64")]
 
-use core::arch::asm;
 use core::arch::x86_64::*;
 
-pub const XCR0_X87: u64 = 1 << 0;
-pub const XCR0_SSE: u64 = 1 << 1;
-pub const XCR0_AVX: u64 = 1 << 2;
-
-pub const CR0_MASK: u64 = 0xFFFFFFFFFFFFFFFB;
-pub const CR0_OR: u64 = 0x22;
-
-pub const CR4_OSFXSR: u64 = 1 << 0;
-pub const CR4_OSXMMEXCPT: u64 = 1 << 1;
-pub const CR4_OSXSAVE: u64 = 1 << 18;
-
-pub const MXCSR_DEFAULT: u32 = 0x1F80;
+use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
+use x86_64::registers::mxcsr::{self, MxCsr};
+use x86_64::registers::xcontrol::{XCr0, XCr0Flags};
 
 pub const CPUID_XSAVE_BIT: u32 = 26;
 pub const CPUID_AVX_BIT: u32 = 28;
@@ -22,46 +12,25 @@ pub const CPUID_AVX_BIT: u32 = 28;
 /// Initializes the floating-point unit (FPU) and configures the required control registers.
 ///
 /// ## Mode of Operation
-/// 1. `EM` (Emulation) and setting the `MP` (Monitor Coprocessor) flags are disabled for `CR0`.
-/// 2. `OSFXSR` and `OSXMMEXCPT` are enabled. If `XSAVE` is supported, it `OSXSAVE` is also
+/// 1. `EM` (Emulation) is cleared, and `MP` (Monitor Coprocessor) and `NE` (Numeric Error) are
+///    set in `CR0`.
+/// 2. `OSFXSR` and `OSXMMEXCPT` are enabled. If `XSAVE` is supported, `OSXSAVE` is also
 ///    enabled.
 /// 3. `MXCSR` (responsible for handling and rounding modes for SIMD ops) is set to the default
 ///    value.
 #[no_mangle]
 pub unsafe extern "C" fn init_fpu() {
-    asm!(
-        "mov rax, cr0",
-        "and rax, {mask}",
-        "or rax, {or_bits}",
-        "mov cr0, rax",
-        mask = const CR0_MASK,
-        or_bits = const CR0_OR,
-        options(nostack)
-    );
+    Cr0::update(|flags| {
+        flags.remove(Cr0Flags::EMULATE_COPROCESSOR);
+        flags.insert(Cr0Flags::MONITOR_COPROCESSOR | Cr0Flags::NUMERIC_ERROR);
+    });
 
-    if is_xsave_supported() {
-        asm!(
-            "mov rax, cr4",
-            "or rax, {cr4_bits}",
-            "mov cr4, rax",
-            cr4_bits = const CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_OSXSAVE,
-            options(nostack)
-        );
-    } else {
-        asm!(
-            "mov rax, cr4",
-            "or rax, {cr4_bits}",
-            "mov cr4, rax",
-            cr4_bits = const CR4_OSFXSR | CR4_OSXMMEXCPT,
-            options(nostack)
-        );
-    }
+    Cr4::update(|flags| {
+        flags.insert(Cr4Flags::OSFXSR | Cr4Flags::OSXMMEXCPT_ENABLE);
+        flags.set(Cr4Flags::OSXSAVE, is_xsave_supported());
+    });
 
-    asm!(
-        "ldmxcsr [{mxcsr}]",
-        mxcsr = in(reg) &MXCSR_DEFAULT,
-        options(nostack, readonly)
-    );
+    mxcsr::write(MxCsr::default());
 }
 
 /// Initializes AVX (Advanced Vector Extensions) support by configuring the `XCR0` register to save
@@ -72,7 +41,7 @@ pub unsafe extern "C" fn init_fpu() {
 #[no_mangle]
 pub unsafe extern "C" fn init_avx() {
     if is_avx_supported() {
-        _xsetbv(0, XCR0_X87 | XCR0_SSE | XCR0_AVX);
+        XCr0::write(XCr0Flags::X87 | XCr0Flags::SSE | XCr0Flags::AVX);
     }
 }
 

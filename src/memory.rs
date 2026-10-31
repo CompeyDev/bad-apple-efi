@@ -1,8 +1,10 @@
 use linked_list_allocator::LockedHeap;
-use uefi::boot::{exit_boot_services, MemoryDescriptor, MemoryType, PAGE_SIZE};
+use uefi::boot::{exit_boot_services, MemoryDescriptor, MemoryType as UefiMemoryType, PAGE_SIZE};
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
 
-use crate::serial::Serial;
+use crate::interrupts::IDT;
+use crate::paging::PageTables;
+use crate::segments::GDT;
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
@@ -16,8 +18,10 @@ pub struct UefiAllocatorManager;
 
 impl UefiAllocatorManager {
     /// Exit boot services, initializes the global allocator with the largest
-    /// available memory region, and sets up serial console. Returns the
-    /// [`MemoryRegion`] inhabited by the allocator.
+    /// available memory region, and loads the GDT and IDT.
+    ///
+    /// Returns the [`MemoryRegion`] inhabited by the allocator and the page tables
+    /// taken over from the firmware.
     ///
     /// ## Errors
     /// - Panics if there are no usable regions for the allocator
@@ -26,14 +30,30 @@ impl UefiAllocatorManager {
     /// - Must only be called once
     /// - After this call, UEFI boot services are no longer available
     /// - The global allocator will be initialized and ready for use
-    pub unsafe fn init() -> MemoryRegion<MemoryMapOwned> {
+    pub unsafe fn init() -> (MemoryRegion<MemoryMapOwned>, PageTables) {
         let mmap = exit_boot_services(None);
+        log::debug!("Exited boot services");
+
+        // Interrupts
+        GDT.load();
+        IDT.load();
+        log::debug!("Loaded the GDT and IDT");
+
         let region = Self::find_memory_region(mmap).expect("No usable memory found in memory map");
 
+        // Heap setup
         ALLOCATOR.lock().init(region.start as *mut u8, region.size);
-        Serial::init();
+        log::info!("Heap: {} MiB", region.size >> 20);
+        log::debug!("Heap at {:#x}..{:#x} ({:?})", region.start, region.end(), region.memory_type);
 
-        region
+        // Memory types
+        let mut tables = PageTables::take_over();
+
+        let dma_pool_size = 1 << 21; // 2 MiB
+        let dma_pool = dma::init(&mut tables, dma_pool_size);
+        log::debug!("DMA pool at {dma_pool:p}, {} KiB uncacheable", dma_pool_size >> 10);
+
+        (region, tables)
     }
 
     /// Find the largest usable chunk of memory from the memory map.
@@ -55,6 +75,45 @@ impl UefiAllocatorManager {
     }
 }
 
+pub mod dma {
+    use core::alloc::{GlobalAlloc, Layout};
+
+    use linked_list_allocator::LockedHeap;
+
+    use crate::paging::PageTables;
+
+    /// Memory for DMA buffers, mapped as uncacheable.
+    static DMA_POOL: LockedHeap = LockedHeap::empty();
+
+    /// Initializes a DMA buffer of `size` bytes, and returns a pointer to it.
+    ///
+    /// It is recommended to use [`memory::dma::alloc`] and [`memory::dma::dealloc`] instead
+    /// of the raw pointer.
+    pub(super) unsafe fn init(tables: &mut PageTables, size: usize) -> *mut u8 {
+        let layout = Layout::from_size_align(size, size).unwrap();
+
+        let pool = super::ALLOCATOR.alloc(layout);
+        assert!(!pool.is_null(), "No memory left for the DMA pool");
+
+        tables.set_uncacheable(pool as u64, size as u64).expect("couldn't make DMA uncacheable");
+        DMA_POOL.lock().init(pool, size);
+        pool
+    }
+
+    /// Allocates zeroed memory from the uncacheable DMA pool, returning null on failure.
+    pub fn alloc(layout: Layout) -> *mut u8 {
+        unsafe { DMA_POOL.alloc_zeroed(layout) }
+    }
+
+    /// Frees memory from [`dma_alloc`].
+    ///
+    /// ## Safety
+    /// `ptr` must come from [`dma_alloc`] with the same `layout`.
+    pub unsafe fn dealloc(ptr: *mut u8, layout: Layout) {
+        unsafe { DMA_POOL.dealloc(ptr, layout) }
+    }
+}
+
 /// A reference to a contiguous block of memory on an underlying [`MemoryMap`]. Not
 /// all regions are usable. Call `is_usable` to check whether a region of memory is
 /// usable first.
@@ -65,12 +124,11 @@ impl UefiAllocatorManager {
 pub struct MemoryRegion<M: MemoryMap> {
     pub start: usize,
     pub size: usize,
-    pub memory_type: MemoryType,
+    pub memory_type: UefiMemoryType,
     pub memory_map: Option<M>,
 }
 
 impl<M: MemoryMap> MemoryRegion<M> {
-    #[allow(unused)]
     pub fn end(&self) -> usize {
         self.start + self.size
     }
@@ -82,16 +140,16 @@ impl<M: MemoryMap> MemoryRegion<M> {
     pub fn is_usable(&self) -> bool {
         matches!(
             self.memory_type,
-            MemoryType::CONVENTIONAL
-                | MemoryType::BOOT_SERVICES_DATA
-                | MemoryType::BOOT_SERVICES_CODE
+            UefiMemoryType::CONVENTIONAL
+                | UefiMemoryType::BOOT_SERVICES_DATA
+                | UefiMemoryType::BOOT_SERVICES_CODE
         )
     }
 }
 
 impl<M: MemoryMap> Default for MemoryRegion<M> {
     fn default() -> Self {
-        Self { start: 0, size: 0, memory_type: MemoryType::UNUSABLE, memory_map: None }
+        Self { start: 0, size: 0, memory_type: UefiMemoryType::UNUSABLE, memory_map: None }
     }
 }
 

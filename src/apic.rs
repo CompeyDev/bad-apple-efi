@@ -1,53 +1,77 @@
-use core::arch::asm;
+use core::arch::naked_asm;
+use core::arch::x86_64::{__cpuid, _mm_mfence};
+use core::sync::atomic::{AtomicU32, Ordering};
+use core::time::Duration;
 
-const IA32_APIC_BASE_MSR: u32 = 0x1B;
+use x86_64::instructions::interrupts;
+use x86_64::registers::model_specific::{ApicBase, ApicBaseFlags, Msr};
+
+use crate::interrupts::{InterruptSemaphore, NakedHandler, IDT};
+use crate::tsc::TSC;
+
 static LAPIC_BASE: spin::Lazy<u32> = spin::Lazy::new(|| {
-    let low: u32;
-    let high: u32;
+    let (frame, flags) = ApicBase::read();
 
-    unsafe {
-        asm!(
-            "rdmsr",
-            in("ecx") IA32_APIC_BASE_MSR,
-            out("eax") low,
-            out("edx") high,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
+    // Our driver needs MMIO, so we look for xAPIC mode
+    let xapic = flags.intersection(ApicBaseFlags::LAPIC_ENABLE | ApicBaseFlags::X2APIC_ENABLE);
+    assert_eq!(xapic, ApicBaseFlags::LAPIC_ENABLE, "LAPIC disabled or x2APIC-only");
 
-    let value = ((high as u64) << 32) | (low as u64);
-    let base = value & 0xFFFF_F000; // Bits 12-35
-
-    // Bit 11 denotes whether LAPIC is globally enabled
-    if (value & (1 << 11)) != 0 {
-        base as u32
-    } else {
-        panic!("LAPIC disabled or x2APIC-only");
-    }
+    frame.start_address().as_u64() as u32
 });
+
+/// If a wait is issued for shorter than this threshold, it is too expensive to use the
+/// interrupt round trip which may take longer than the requested time. In this case, we
+/// use a simple spin loop to busy wait. Busy waiting keeps the CPU active for a very short
+/// period of time too, so that is fine.
+const SPIN_THRESHOLD: Duration = Duration::from_micros(20);
+
+static TIMER_SEMAPHORE: InterruptSemaphore = InterruptSemaphore::new();
+
+/// The global [`ApicTimer`] instance. [`ApicTimer::calibrate`] must be called once.
+pub static APIC_TIMER: ApicTimer = ApicTimer::new();
+
+//
+// Local APIC Timer
+//
 
 /// [APIC](https://en.wikipedia.org/wiki/Advanced_Programmable_Interrupt_Controller) timer
 /// abstraction for delay functionality.
-#[derive(Debug, Clone, Copy)]
 pub struct ApicTimer {
-    /// Base frequency that the timer ticks at naturally
-    frequency: u32,
+    /// Base frequency that the timer ticks at naturally, zero when uncalibrated
+    frequency: AtomicU32,
     /// Divisor applied to the base frequency
-    divisor: u32,
+    divisor: AtomicU32,
 }
 
 impl ApicTimer {
+    const fn new() -> Self {
+        Self { frequency: AtomicU32::new(0), divisor: AtomicU32::new(1) }
+    }
+
     /// Spurious interrupt vector number
-    const SPURIOUS_VECTOR: u32 = 0xFF;
+    pub const SPURIOUS_VECTOR: u32 = 0xFF;
     /// APIC Software Enable bit
     const APIC_SW_ENABLE: u32 = 0x100;
     /// LVT Timer mask bit (disable interrupts)
     const LVT_MASKED: u32 = 0x10000;
+    /// LVT ExtINT delivery mode (virtual wire)
+    const LVT_EXTINT: u32 = 0b111 << 8;
+    /// LVT Timer mode bits for TSC deadline mode
+    const LVT_TSC_DEADLINE: u32 = 0b10 << 17;
+    /// `IA32_TSC_DEADLINE` MSR, which fires the timer when the TSC reaches its value
+    const TSC_DEADLINE_MSR: u32 = 0x6E0;
+    /// Interrupt vector used for APIC timer interrupts
+    pub const TIMER_VECTOR: u8 = 0x30;
 
     /// Spurious Interrupt Vector Register
     #[inline(always)]
     pub fn lapic_svr() -> *mut u32 {
         (*LAPIC_BASE + 0xF0) as *mut u32
+    }
+
+    #[inline(always)]
+    pub fn lapic_eoi() -> *mut u32 {
+        (*LAPIC_BASE + 0xB0) as *mut u32
     }
 
     /// Timer Divide Configuration Register
@@ -62,6 +86,12 @@ impl ApicTimer {
         (*LAPIC_BASE + 0x320) as *mut u32
     }
 
+    /// Local Vector Table LINT0 Register, where the PIC is connected
+    #[inline(always)]
+    pub fn lapic_lvt_lint0() -> *mut u32 {
+        (*LAPIC_BASE + 0x350) as *mut u32
+    }
+
     /// Initial Count Register (Timer count)
     #[inline(always)]
     pub fn lapic_icr() -> *mut u32 {
@@ -74,134 +104,85 @@ impl ApicTimer {
         (*LAPIC_BASE + 0x390) as *mut u32
     }
 
-    /// Initialize the APIC timer with the specified frequency and divisor.
+    /// Calibrate and initialize the APIC timer by measuring its actual frequency.
+    ///
+    /// This function calibrates the TSC first, see [`Tsc::calibrate`], then uses the TSC
+    /// to calibrate the APIC timer.
     ///
     /// The divisor determines the timer frequency. The divisor must be a power
     /// of two from 1 to 128 (i.e., 1, 2, 4, 8, 16, 32, 64, or 128). For high
     /// precision, 16 is commonly used.
-    pub fn init(frequency: u32, divisor: u32) -> Self {
+    ///
+    /// [`Tsc::calibrate`]: crate::tsc::Tsc::calibrate
+    pub fn calibrate(&self, divisor: u32) {
         // Enable APIC with spurious interrupt vector
         unsafe {
             Self::lapic_svr().write_volatile(Self::APIC_SW_ENABLE | Self::SPURIOUS_VECTOR);
+            Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED);
+            Self::lapic_eoi().write_volatile(0);
+
+            // The PIT calibration of the TSC relies on the PIC's IRQ0, which firmware doesn't
+            // always route it to us by default. Our remapped PIC needs to do the routing instead,
+            // therefore we enable the ExtINT mode.
+            Self::lapic_lvt_lint0().write_volatile(Self::LVT_EXTINT);
         }
 
-        let timer = ApicTimer { frequency, divisor };
-        timer.set_divisor(divisor);
-        timer
+        Self::set_divisor(divisor);
+
+        TSC.calibrate();
+        let frequency = Self::calibrate_apic_with_tsc(divisor);
+        log::debug!("APIC timer base frequency: {} MHz (divisor {divisor})", frequency / 1_000_000);
+
+        self.frequency.store(frequency, Ordering::Relaxed);
+        self.divisor.store(divisor, Ordering::Relaxed);
     }
 
-    /// Calibrate and initialize the APIC timer by measuring its actual frequency.
+    /// Calibrate APIC timer base frequency using TSC as reference.
     ///
-    /// This function uses the PIT (Programmable Interval Timer) to measure the
-    /// APIC timer's base frequency. The calibration period is 10ms.
-    ///
-    /// The divisor determines the timer frequency. The divisor must be a power
-    /// of two from 1 to 128 (i.e., 1, 2, 4, 8, 16, 32, 64, or 128). For high
-    /// precision, 16 is commonly used.
-    pub fn calibrate(divisor: u32) -> Self {
-        // Emit the initial divisor into the register before measuring
-        let _ = Self::init(0, divisor);
-
-        let actual_frequency = unsafe {
-            // Oneshot mode, masked interrupt, max initial count
-            Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED);
-            Self::lapic_icr().write_volatile(0xFFFFFFFF);
-
-            // Wait for 10ms using PIT
-            Self::pit_sleep_10ms();
-
-            // Read how much the timer counted down
-            let current_count = Self::lapic_ccr().read_volatile();
-            let ticks_in_10ms = 0xFFFFFFFF - current_count;
-
-            (ticks_in_10ms as u64 * 100 * divisor as u64) as u32
-        };
-
-        Self::init(actual_frequency, divisor)
-    }
-
-    /// Sleep for 10ms using the PIT (Programmable Interval Timer).
-    ///
-    /// This is used during calibration. The PIT runs at a fixed 1.193182 MHz.
-    fn pit_sleep_10ms() {
-        const PIT_FREQUENCY: u32 = 1193182;
-        const PIT_CHANNEL_0: u16 = 0x40;
-        const PIT_COMMAND: u16 = 0x43;
-
-        // Interval of 10ms (1/100th of a second)
-        let count = (PIT_FREQUENCY / 100) as u16;
+    /// Programs APIC timer to count for a known duration (measured via TSC),
+    /// then derives the base bus frequency.
+    fn calibrate_apic_with_tsc(divisor: u32) -> u32 {
+        const CALIBRATION_MS: u64 = 100;
 
         unsafe {
-            // Set PIT to mode 0 (interrupt on terminal count), binary mode
-            asm!(
-                "out dx, al",
-                in("dx") PIT_COMMAND,
-                in("al") 0b00110000u8, // Channel 0, lobyte/hibyte, mode 0
-                options(nomem, nostack, preserves_flags)
-            );
+            // Disable interrupts during calibration for accurate measurement
+            interrupts::disable();
 
-            // Low byte of count
-            asm!(
-                "out dx, al",
-                in("dx") PIT_CHANNEL_0,
-                in("al") (count & 0xFF) as u8,
-                options(nomem, nostack, preserves_flags)
-            );
+            // Mask timer during calibration (bit 16 set), one-shot mode (bits hi 18 and lo 17 unset)
+            Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED | (Self::TIMER_VECTOR as u32));
+            Self::lapic_icr().write_volatile(0xFFFFFFFF); // initial count
+            _mm_mfence();
 
-            // High byte of count
-            asm!(
-                "out dx, al",
-                in("dx") PIT_CHANNEL_0,
-                in("al") ((count >> 8) & 0xFF) as u8,
-                options(nomem, nostack, preserves_flags)
-            );
+            let ccr_initial = Self::lapic_ccr().read_volatile();
+            let tsc_start = TSC.now();
+            let window = TSC.to_ticks(Duration::from_millis(CALIBRATION_MS));
+            let tsc_target = tsc_start + window.expect("TSC is calibrated first");
 
-            // Wait for PIT to count down
-            let mut prev_count = count;
-            loop {
-                // Latch count
-                asm!(
-                    "out dx, al",
-                    in("dx") PIT_COMMAND,
-                    in("al") 0b00000000u8,
-                    options(nomem, nostack, preserves_flags)
-                );
-
-                // Read low byte
-                let low: u8;
-                asm!(
-                    "in al, dx",
-                    in("dx") PIT_CHANNEL_0,
-                    out("al") low,
-                    options(nomem, nostack, preserves_flags)
-                );
-
-                // Read high byte
-                let high: u8;
-                asm!(
-                    "in al, dx",
-                    in("dx") PIT_CHANNEL_0,
-                    out("al") high,
-                    options(nomem, nostack, preserves_flags)
-                );
-
-                // Check if count wrapped around (reached 0)
-                let current_count = ((high as u16) << 8) | (low as u16);
-                if current_count > prev_count {
-                    break;
-                }
-
-                prev_count = current_count;
+            // Poll for required time period
+            while TSC.now() < tsc_target {
                 core::hint::spin_loop();
             }
+
+            // Stop timer and get final count
+            Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED);
+            let ccr_final = Self::lapic_ccr().read_volatile();
+
+            // Re-enable interrupts after calibration
+            interrupts::enable();
+
+            let apic_count = (ccr_initial - ccr_final) as u64; // timer counts downwards
+            let per_second = 1000 / CALIBRATION_MS;
+            let base_freq = apic_count.wrapping_mul(per_second).wrapping_mul(divisor as u64);
+
+            base_freq as u32
         }
     }
 
-    /// Set the timer divisor.
+    /// Set the timer divisor
     ///
     /// The APIC Timer Divide Configuration Register uses a specific encoding
     /// for divisor values, not the divisor value directly.
-    pub fn set_divisor(&self, divisor: u32) {
+    pub fn set_divisor(divisor: u32) {
         let encoded = match divisor {
             1 => 0b1011,
             2 => 0b0000,
@@ -226,25 +207,113 @@ impl ApicTimer {
     /// ticks is calculated based on the desired delay, the timer frequency, and
     /// the configured divisor.
     pub fn delay(&self, delay_ms: u32) {
-        let effective_frequency = self.frequency / self.divisor;
-        let ticks_per_ms = effective_frequency / 1_000;
-        let ticks = delay_ms * ticks_per_ms;
+        let base_ticks_per_ms = self.frequency.load(Ordering::Relaxed) / 1_000;
+        let base_ticks = delay_ms * base_ticks_per_ms;
+        let effective_ticks = base_ticks / self.divisor.load(Ordering::Relaxed);
 
-        unsafe {
-            // Set mode to oneshot (0x0) and mask the interrupt
-            Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED);
-            Self::lapic_icr().write_volatile(ticks);
+        if effective_ticks == 0 {
+            return;
         }
 
-        self.wait_for_timer();
+        Self::wait_for_interrupt(|| unsafe {
+            // Oneshot mode unmasked timer with our vector
+            Self::lapic_lvt_timer().write_volatile(Self::TIMER_VECTOR as u32);
+            Self::lapic_icr().write_volatile(effective_ticks);
+        });
     }
 
-    /// Wait for the APIC timer to finish counting down to zero.
-    fn wait_for_timer(&self) {
+    /// Runs `f`, expecting it to start a timer on [`Self::TIMER_VECTOR`], and halts until
+    /// the interrupt fires, then remasks the timer.
+    ///
+    /// Used internally for both timer modes.
+    fn wait_for_interrupt(f: impl FnOnce()) {
+        #[unsafe(naked)]
+        extern "C" fn timer_interrupt_handler() {
+            naked_asm!(
+                "push rax", // snapshot rax
+
+                // Direct atomic store to semaphore state (AtomicBool is repr(transparent))
+                "lea rax, [rip + {sem}]",
+                "add rax, {off}",
+                "mov byte ptr [rax], 1",
+                "mfence",
+
+                // EOI
+                "mov rax, 0xFEE000B0",
+                "mov dword ptr [rax], 0",
+                "mfence",
+
+                "pop rax", // restore rax
+                "iretq",
+
+                // Take in semaphore address and offset to inner field to calculate
+                // the direct address to the field for the completion state
+                sem = sym TIMER_SEMAPHORE,
+                off = const TIMER_SEMAPHORE.completed_offset(),
+            );
+        }
+
+        IDT.register_handler(Self::TIMER_VECTOR, timer_interrupt_handler as NakedHandler);
+        TIMER_SEMAPHORE.reset();
+        f();
+
+        // Wait for the timer to finish, and remask it
+        TIMER_SEMAPHORE.wait();
         unsafe {
-            while Self::lapic_ccr().read_volatile() > 0 {
-                core::hint::spin_loop();
+            Self::lapic_lvt_timer().write_volatile(Self::LVT_MASKED | Self::TIMER_VECTOR as u32);
+        }
+    }
+
+    /// Whether the timer can wait until an absolute TSC value (`CPUID.01H:ECX[24]`).
+    pub fn supports_tsc_deadline() -> bool {
+        __cpuid(1).ecx & (1 << 24) != 0
+    }
+
+    /// Sleeps for `duration`. See [`ApicTimer::sleep_until`].
+    pub fn sleep(&self, duration: Duration) {
+        if let Some(ticks) = TSC.to_ticks(duration) {
+            self.sleep_until(TSC.now() + ticks);
+        }
+    }
+
+    /// Sleeps until the TSC reaches `deadline`, halting the CPU.
+    ///
+    /// If the wait time is under the [`SPIN_THRESHOLD`], busy waiting is used instead.
+    ///
+    /// On CPUs without support for TSC deadline mode on the APIC, oneshot mode is used to
+    /// replicate its behavior, which only has whole millisecond granularity.
+    pub fn sleep_until(&self, deadline: u64) {
+        let Some(remaining) = deadline.checked_sub(TSC.now()) else { return };
+        let remaining = TSC.to_duration(remaining).unwrap_or_default();
+
+        if remaining >= SPIN_THRESHOLD {
+            if Self::supports_tsc_deadline() {
+                Self::sleep_tsc_deadline(deadline);
+            } else {
+                log::warn!("TSC deadline mode unsupported, using oneshot mode");
+                let millis = remaining.as_secs() * 1000 + u64::from(remaining.subsec_millis());
+                if millis > 0 {
+                    self.delay(millis as u32);
+                }
             }
         }
+
+        // If the wait time is too small, fall back to a spin loop
+        while TSC.now() < deadline {
+            log::debug!("Wait time too granular, using spin loop");
+            core::hint::spin_loop();
+        }
+    }
+
+    fn sleep_tsc_deadline(deadline: u64) {
+        Self::wait_for_interrupt(|| unsafe {
+            let lvt = Self::LVT_TSC_DEADLINE | Self::TIMER_VECTOR as u32;
+            Self::lapic_lvt_timer().write_volatile(lvt);
+            _mm_mfence(); // mode switch should be ordered before MSR (source: SDM)
+            Msr::new(Self::TSC_DEADLINE_MSR).write(deadline);
+        });
+
+        // The deadline disarms itself anyway, just to be safe
+        unsafe { Msr::new(Self::TSC_DEADLINE_MSR).write(0) };
     }
 }

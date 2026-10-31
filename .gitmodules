@@ -1,0 +1,9 @@
+[submodule "vendor/libvpx"]
+	path = vendor/libvpx
+	url = https://chromium.googlesource.com/webm/libvpx
+[submodule "vendor/uHDA"]
+	path = vendor/uHDA
+	url = https://github.com/uDrivers/uHDA.git
+[submodule "vendor/opus"]
+	path = vendor/opus
+	url = https://github.com/xiph/opus.git
