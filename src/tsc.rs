@@ -70,13 +70,13 @@ impl Tsc {
         Some(duration.as_secs() * hz + subsec)
     }
 
-    /// Spins until `done` returns true or the TSC reaches `deadline` ticks, returning whether 
+    /// Spins until `done` returns true or the TSC reaches `deadline` ticks, returning whether
     /// it is done.
     pub fn spin_until(&self, deadline: u64, done: impl Fn() -> bool) -> bool {
         while !done() && self.now() < deadline {
             core::hint::spin_loop();
         }
-        
+
         done()
     }
 
@@ -184,7 +184,7 @@ impl Tsc {
             // off in a pending state while masked, which would fire immediately after the unmask,
             // triggering the PIT measure too early. We need to handle this before our own PIT
             // programming and measurement.
-            
+
             // Ask the master controller whether IRQ0 is pending by OCW3 command (the IRR)
             if { pic_command.write(0x0A); pic_command.read() & 0x01 } != 0 {
                 // If the timer is pending, let it fire, and clear it
