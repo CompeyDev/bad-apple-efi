@@ -1,0 +1,19 @@
+Fix the indices of the white and other colour strings
+
+`UhdaColor` skips from pink at 9 to white at 14, but the string table does not properly
+map, putting white and other at 10 and 11 instead of 14 and 15. We null values in to
+properly align them.
+
+--- a/src/uhda.cpp
++++ b/src/uhda.cpp
+@@ -200,6 +200,10 @@
+ 	"yellow",
+ 	"purple",
+ 	"pink",
++	nullptr,
++	nullptr,
++	nullptr,
++	nullptr,
+ 	"white",
+ 	"other"
+ };

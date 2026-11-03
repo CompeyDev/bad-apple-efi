@@ -2,12 +2,6 @@
 
 The [bad apple video](https://youtu.be/FtutLA63Cp8) but bootable, powered by 🦀
 
-> [!NOTE]  
-> The EFI application does not support audio yet. Audio support has been planned, and will likely be 
-> implemented using [PC Speaker](https://wiki.osdev.org/PC_Speaker), and a simple MIDI track. Open a
-> [Pull Request](https://github.com/CompeyDev/bad-apple-efi/pulls) if you have a more ambitious method
-> in mind!
-
 <details>
   <summary>Preview</summary>
 
@@ -24,13 +18,36 @@ other distributions.
 
 ```sh
 # Install prerequisites
-sudo pacman -S qemu-base qemu-ui-gtk ovmf
+sudo pacman -S qemu-base qemu-ui-gtk ovmf clang llvm nasm ffmpeg
 
 # Clone the repository
-git clone https://github.com/CompeyDev/bad-apple-efi.git && cd bad-apple-efi
+git clone --recurse-submodules https://github.com/CompeyDev/bad-apple-efi.git
+cd bad-apple-efi
+
+# Provide the video (see video section)
+cp /path/to/bad_apple.webm bin/
 
 # Build and run in QEMU 
 cargo xtask qemu-run
+```
+
+#### Video
+You must supply the video as an MP4 or WEBM file in the `bin/` directory. Any codec
+is accepted, `ffmpeg` is used to convert it to a compatible VP9 stream at build time.
+
+The final VP9 stream is cached across builds, so the encoding process only runs once.
+
+#### Colour
+By default, the video is shaded in "two tone" mode for a more retro look. Full color
+from the original display can be displayed by enabling the `high_res` build during
+the build.
+
+Arguments after an xtask's name are passed to cargo, and for `qemu-run`, arguments
+after `--` are passed to QEMU:
+
+```sh
+cargo xtask qemu-run --features high_res   # full colour
+cargo xtask qemu-run -- -display none      # run headless
 ```
 
 ### Precompiled

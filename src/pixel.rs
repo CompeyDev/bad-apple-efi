@@ -1,12 +1,8 @@
 #![allow(unused)]
 #![allow(clippy::from_over_into)]
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::arch::x86_64::*;
-
-use resize::px::PixelFormat;
-use resize::{formats, Resizer, Type};
 
 /// Represents a color for drawing on the display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -89,81 +85,6 @@ impl Into<(u8, u8, u8)> for Color {
             }
         }
     }
-}
-
-// TODO: Improve `resize` create perf for `no_std` floating point arithmetic
-// and swap to it, instead of custom nearest-neighbour implementation. The below
-// code is unused.
-
-#[rustfmt::skip]
-#[allow(type_alias_bounds)]
-type PixelFormatResizer<T: PixelFormat> = fn(usize, usize, usize, usize, T, Type) -> resize::Result<Resizer<T>>;
-
-pub type Rgb = formats::Rgb<u8, u8>;
-pub type RgbA = formats::Rgba<u8, u8>;
-pub type Luma = formats::Gray<u8, u8>;
-
-pub const RGB_RESIZER: PixelFormatResizer<Rgb> = resize::new::<Rgb>;
-pub const RGBA_RESIZER: PixelFormatResizer<RgbA> = resize::new::<RgbA>;
-pub const LUMA_RESIZER: PixelFormatResizer<Luma> = resize::new::<Luma>;
-
-pub const RGB_CHANNELS_SIZE: usize = 3;
-pub const RGBA_CHANNELS_SIZE: usize = 4;
-pub const LUMA_CHANNELS_SIZE: usize = 1;
-
-/// Syntatic sugar around converting between a `zune_core::colorspace::ColorSpace` and a constructed
-/// `Resizer`.
-///
-/// ```no_run
-/// let (scaled, bytes_per_pixel) = resize!(
-///     colorspace,
-///     pixels.as_slice(),
-///     (src_width, src_height) => (dest_width, dest_height),
-///     [
-///         (ColorSpace::RGB,  as_rgb,  as_rgb_mut)  => (RGB_RESIZER,  RGB_CHANNELS_SIZE)  => Pixel::RGB8,
-///         (ColorSpace::RGBA, as_rgba, as_rgba_mut) => (RGBA_RESIZER, RGBA_CHANNELS_SIZE) => Pixel::RGBA8,
-///         (ColorSpace::Luma, as_gray, as_gray_mut) => (LUMA_RESIZER, LUMA_CHANNELS_SIZE) => Pixel::Gray8,
-///     ]
-/// )?;
-/// ```
-#[macro_export]
-macro_rules! resize {
-    (
-        $var:expr,
-        $src:expr,
-        ($orig_width:expr, $orig_height:expr) => ($new_width:expr, $new_height:expr),
-        [$(($colorspace:path,$method:ident,$method_mut:ident) => ($resizer:ident, $channel_size:ident) => $pixel:expr),+ $(,)?]
-    ) => {{
-        let result = match $var {
-            $(
-                $colorspace => {
-                    let imp = || -> resize::Result<(alloc::vec::Vec<u8>, usize)> {
-                        let mut dest = alloc::vec![0; $new_width * $new_height * $channel_size];
-                        $resizer(
-                            $orig_width,
-                            $orig_height,
-                            $new_width,
-                            $new_height,
-                            $pixel,
-                            resize::Type::Point
-                        )?
-                        .resize(
-                            rgb::FromSlice::<u8>::$method($src),
-                            rgb::FromSlice::<u8>::$method_mut(dest.as_mut_slice())
-                        )?;
-
-                        Ok((dest, $channel_size))
-                    };
-
-                    imp()
-                }
-                ,
-            )+
-            _ => continue,
-        };
-
-        result
-    }};
 }
 
 /// A fast, SSE-based nearest-neighbour scaling implementation for per-frame scaling.

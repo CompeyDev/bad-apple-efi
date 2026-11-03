@@ -1,6 +1,26 @@
 [build]
 target = "x86_64-unknown-uefi"
-rustflags = ["-C", "target-feature=+sse,+sse2,+sse4.1,+avx,+avx2,-soft-float"]
+
+# Only for the UEFI target, so `xtask` builds with the host's own features
+[target.x86_64-unknown-uefi]
+rustflags = [
+    # NOTE: The prebuilt standard libraries and compiler builtins stay soft-float, so anything
+    # which passes floats or returns 128-bit integers have a different ABI than our force enabled
+    # hardware floats and get garbage data. The compiiler explicitly warns us about not overriding
+    # it for this reason, so we must avoid anything 128-bit.
+    "-C",
+    "target-feature=+sse,+sse2,+sse4.1,+avx,+avx2,-soft-float",
+
+    # Makes out hot loops call our own optimized copies of generics instead of the slow unoptimized
+    # copies built from our dependencies. This way, we can save build time buy only compiling our own
+    # crate at an opt-level of 1, while compiling dependencies without any optimizations in debug mode
+    "-Zshare-generics=no",
+]
+
+[env]
+# `nostd-printf` does not specify a compiler, so `cc` just uses the host compiler, which does not emit
+# proper COFF data. We need to override the compiler.
+CC_x86_64_unknown_uefi = "clang"
 
 [alias]
-xtask = "run --quiet --release --target x86_64-unknown-linux-gnu --manifest-path ./xtask/Cargo.toml --"
+xtask = "run --quiet --release --target host-tuple --manifest-path ./xtask/Cargo.toml --"
