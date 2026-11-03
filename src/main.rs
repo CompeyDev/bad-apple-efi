@@ -55,9 +55,9 @@ unsafe extern "efiapi" fn main() {
         "sub rsp, 40",  // calling convention: shadow space for alignment
 
         // Handle feature support first before calling any Rust code
-        "call {is_supported}",
-        "test al, al",
-        "jz 2f",
+        "call {missing_features}",
+        "test eax, eax",
+        "jnz 2f",
 
         "call {init_fpu}",
         "call {init_avx}",
@@ -70,12 +70,12 @@ unsafe extern "efiapi" fn main() {
 
         // Explain why we can't run, which returns to the firmware
         "2:",
-        "add rsp, 40",
-        "pop rcx", // system table
-        "pop rdx",
+        "mov edx, eax",         // arg: missing features
+        "mov rcx, [rsp + 40]",  // arg: system table
+        "add rsp, 56",          // free shadow space and parameters
         "jmp {unsupported}",
 
-        is_supported = sym cpu_features::is_supported,
+        missing_features = sym cpu_features::missing_features,
         unsupported = sym cpu_features::unsupported,
         init_fpu = sym cpu_features::init_fpu,
         init_avx = sym cpu_features::init_avx,
