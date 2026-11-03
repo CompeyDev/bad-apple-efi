@@ -70,7 +70,7 @@ impl Tsc {
         Some(duration.as_secs() * hz + subsec)
     }
 
-    /// Spins until `done` returns true or the TSC reaches `deadline` ricks, returning whether 
+    /// Spins until `done` returns true or the TSC reaches `deadline` ticks, returning whether 
     /// it is done.
     pub fn spin_until(&self, deadline: u64, done: impl Fn() -> bool) -> bool {
         while !done() && self.now() < deadline {
@@ -255,7 +255,7 @@ impl PitMeasurement {
     /// Wait until the interrupt for capturing the TSC has been handled.
     ///
     /// ## Errors
-    /// Panics if the interrupt never arrives. Make sure the PIC is rounted to LAPIC.
+    /// Panics if the interrupt never arrives. Make sure the PIC is routed to LAPIC.
     fn wait_for_capture(&self) {
         const TIMEOUT_TICKS: u64 = 10_000_000_000; // TSC not calibrated yet, use ticks instead of time
 
@@ -301,7 +301,7 @@ impl PitMeasurement {
                 "mov al, 0x20",
                 "out 0x20, al",
 
-                // REstore registers
+                // Restore registers
                 "pop rdx",
                 "pop rbx",
                 "pop rax",

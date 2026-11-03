@@ -116,7 +116,7 @@ impl SerialConsole {
         }
     }
 
-    /// Enables interrupts for the console, i.e., logs are queued in the backgroudn rather than
+    /// Enables interrupts for the console, i.e., logs are queued in the background rather than
     /// blocking for writes.
     ///
     /// ## Safety
