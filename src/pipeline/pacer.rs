@@ -6,6 +6,8 @@ use crate::tsc::TSC;
 
 /// Longest sleep while waiting on the audio clock, so the hardware buffer keeps getting data.
 const AUDIO_POLL: Duration = Duration::from_millis(4);
+// Period of time before considering the audio clock to be stalled
+const AUDIO_STALL: Duration = Duration::from_millis(500);
 
 /// Scheduler for frame rendering.
 ///
@@ -13,25 +15,40 @@ const AUDIO_POLL: Duration = Duration::from_millis(4);
 /// when there is any, so the video stays in sync with it. Otherwise, the TSC is used.
 pub struct FramePacer {
     period: Duration,
+    /// The TSC timestamp the clock started at, once pacing by the TSC
     start: Option<u64>,
+    /// The last audio time seen, and the TSC timestamp it was first seen at
+    last_audio: Option<(Duration, u64)>,
 }
 
 impl FramePacer {
     pub fn new(fps: u32) -> Self {
-        Self { period: Duration::from_secs(1) / fps, start: None }
+        Self { period: Duration::from_secs(1) / fps, start: None, last_audio: None }
     }
 
     /// The current playback time, derived from either the `audio` clock or the starting
     /// TSC timestamp.
     pub fn now(&mut self, audio: Option<&mut AudioOutput>) -> Duration {
-        match audio {
-            Some(audio) => audio.clock(),
-            None => {
-                // When no audio is present, syncing is done using the TSC clock
-                let start = *self.start.get_or_insert_with(|| TSC.now());
-                TSC.to_duration(TSC.now() - start).unwrap_or_default()
+        // Pace by the audio clock. If it stalls, fall back to TSC
+        if let (None, Some(audio)) = (self.start, audio) {
+            let (clock, now) = (audio.clock(), TSC.now());
+            let &mut (last, since) = self.last_audio.get_or_insert((clock, now));
+            if clock != last {
+                self.last_audio = Some((clock, now));
+                return clock;
             }
+
+            if TSC.to_duration(now - since).unwrap_or_default() < AUDIO_STALL {
+                return clock;
+            }
+
+            log::warn!("Audio clock stopped advancing, pacing by the TSC instead");
+            self.start = Some(now.saturating_sub(TSC.to_ticks(clock).unwrap_or_default()));
         }
+
+        // When no audio is present, syncing is done only by using the TSC clock
+        let start = *self.start.get_or_insert_with(|| TSC.now());
+        TSC.to_duration(TSC.now() - start).unwrap_or_default()
     }
 
     /// Whether a frame is more than a frame behind the clock. If so, it should be dropped
