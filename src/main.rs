@@ -50,17 +50,33 @@ unsafe extern "efiapi" fn main() {
 
     core::arch::naked_asm!(
         // Save UEFI parameters temporarily
-        "push rcx", // image handle
-        "push rdx", // system table
+        "push rcx",     // image handle
+        "push rdx",     // system table
+        "sub rsp, 40",  // calling convention: shadow space for alignment
+
+        // Handle feature support first before calling any Rust code
+        "call {is_supported}",
+        "test al, al",
+        "jz 2f",
 
         "call {init_fpu}",
         "call {init_avx}",
 
         // Restore parameters and trigger real main
+        "add rsp, 40",
         "pop rdx",
         "pop rcx",
         "jmp {main_impl}",
 
+        // Explain why we can't run, which returns to the firmware
+        "2:",
+        "add rsp, 40",
+        "pop rcx", // system table
+        "pop rdx",
+        "jmp {unsupported}",
+
+        is_supported = sym cpu_features::is_supported,
+        unsupported = sym cpu_features::unsupported,
         init_fpu = sym cpu_features::init_fpu,
         init_avx = sym cpu_features::init_avx,
         main_impl = sym main_impl,

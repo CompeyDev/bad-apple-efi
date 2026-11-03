@@ -135,6 +135,7 @@ dependencies = [
  "thiserror",
  "uart_16550",
  "uefi",
+ "uefi-raw",
  "x86_64",
  "xshell",
  "zerocopy",

@@ -9,6 +9,13 @@ The [bad apple video](https://youtu.be/FtutLA63Cp8) but bootable, powered by ðŸ¦
 </details>
 
 
+## Requirements
+The CPU must support AVX2 and FMA, which means an Intel Haswell (2013), AMD Excavator (2015)
+or newer CPU. If you are unsure whether your CPU supports these features, try booting and
+an unsupported CPU would display an error.
+
+The system must boot through UEFI, legacy BIOS is not supported.
+
 ## Usage
 
 ### Source
@@ -18,7 +25,7 @@ other distributions.
 
 ```sh
 # Install prerequisites
-sudo pacman -S qemu-base qemu-ui-gtk ovmf clang llvm nasm ffmpeg
+sudo pacman -S qemu-base qemu-ui-gtk ovmf clang llvm lld nasm ffmpeg
 
 # Clone the repository
 git clone --recurse-submodules https://github.com/CompeyDev/bad-apple-efi.git
@@ -30,6 +37,10 @@ cp /path/to/bad_apple.webm bin/
 # Build and run in QEMU 
 cargo xtask qemu-run
 ```
+
+#### Audio
+Audio is played through the first HD Audio controller with an analog output, such as speakers
+or a headphone jack. Digital outputs like HDMI are not supported.
 
 #### Video
 You must supply the video as an MP4 or WEBM file in the `bin/` directory. Any codec

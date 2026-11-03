@@ -40,6 +40,7 @@ opt-level = 3
 
 [dependencies]
 uefi = "0.36.1"
+uefi-raw = "0.13"
 thiserror = { version = "2.0.17", default-features = false }
 nostd-printf = "0.1.4"
 linked_list_allocator = "0.10.5"
