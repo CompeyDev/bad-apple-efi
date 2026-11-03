@@ -1,6 +1,6 @@
 use core::arch::naked_asm;
 use core::arch::x86_64::{__cpuid, _mm_mfence};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 
 use x86_64::instructions::interrupts;
@@ -132,6 +132,10 @@ impl ApicTimer {
         TSC.calibrate();
         let frequency = Self::calibrate_apic_with_tsc(divisor);
         log::debug!("APIC timer base frequency: {} MHz (divisor {divisor})", frequency / 1_000_000);
+
+        if !Self::supports_tsc_deadline() {
+            log::warn!("TSC deadline mode unsupported, using oneshot mode");
+        }
 
         self.frequency.store(frequency, Ordering::Relaxed);
         self.divisor.store(divisor, Ordering::Relaxed);
@@ -290,7 +294,6 @@ impl ApicTimer {
             if Self::supports_tsc_deadline() {
                 Self::sleep_tsc_deadline(deadline);
             } else {
-                log::warn!("TSC deadline mode unsupported, using oneshot mode");
                 let millis = remaining.as_secs() * 1000 + u64::from(remaining.subsec_millis());
                 if millis > 0 {
                     self.delay(millis as u32);
@@ -299,9 +302,10 @@ impl ApicTimer {
         }
 
         // If the wait time is too small, fall back to a spin loop
-        while TSC.now() < deadline {
-            log::debug!("Wait time too granular, using spin loop");
-            core::hint::spin_loop();
+        if TSC.now() < deadline {
+            // Log once before spinning
+            log::trace!("Wait time too granular, using spin loop");
+            TSC.spin_until(deadline, || false);
         }
     }
 
