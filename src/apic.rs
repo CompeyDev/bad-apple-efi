@@ -1,6 +1,6 @@
 use core::arch::naked_asm;
 use core::arch::x86_64::{__cpuid, _mm_mfence};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
 use x86_64::instructions::interrupts;
