@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use core::ffi::{c_char, c_int, CStr};
 use core::ptr::{self, NonNull};
 
+use itertools::Itertools;
 use owo_colors::OwoColorize;
 
 use crate::hda::bindings::*;
@@ -33,24 +34,44 @@ pub struct Hda {
 }
 
 impl Hda {
-    /// Finds the first supported HDA controller on the PCI bus, and resets it along with its
-    /// codecs.
+    /// Finds the first supported HDA controller on the PCI bus with an **analog** output.
+    ///
+    /// Digital outputs are ignored (such as HDMI) since uHDA does not support them.
     ///
     /// Requires [`TSC`](crate::tsc::TSC) to be calibrated.
     pub fn init() -> Result<Self, HdaError> {
-        let device = Box::new(PciDevice::find_hda().ok_or(HdaError::NoController)?);
+        PciDevice::find_hda()
+            .map(Self::open_analog)
+            .find_or_last(Result::is_ok)
+            .unwrap_or(Err(HdaError::NoController))
+    }
 
-        let mut controller = ptr::null_mut();
-        unsafe { uhda_init(&raw const *device as usize, &mut controller) }.ok()?;
-
-        let controller = NonNull::new(controller).expect("uHDA didn't return a controller");
-        let hda = Self { controller, device };
+    /// Resets a controller and keeps it if it is analog. Otherwise, it is shut down.
+    fn open_analog(device: PciDevice) -> Result<Self, HdaError> {
+        let address = device.address;
+        let hda = Self::open(device)
+            .inspect_err(|err| log::warn!("Skipping HDA controller at {address}: {err}"))?;
 
         for output in hda.outputs() {
             log::info!("Found output: {output}");
         }
 
+        if !hda.outputs().any(|output| output.is_analog()) {
+            log::debug!("Skipping HDA controller at {address}, it has no analog outputs");
+            return Err(HdaError::NoOutput);
+        }
+
         Ok(hda)
+    }
+
+    /// Resets a controller along with its codecs.
+    fn open(device: PciDevice) -> Result<Self, HdaError> {
+        let device = Box::new(device);
+        let mut controller = ptr::null_mut();
+        unsafe { uhda_init(&raw const *device as usize, &mut controller) }.ok()?;
+
+        let controller = NonNull::new(controller).expect("uHDA didn't return a controller");
+        Ok(Self { controller, device })
     }
 
     /// Opens an interleaved 16-bit PCM stream.
@@ -95,6 +116,28 @@ pub struct Output<'a>(&'a UhdaOutput);
 impl Output<'_> {
     pub fn info(&self) -> UhdaOutputInfo {
         unsafe { uhda_output_get_info(self.0) }
+    }
+
+    /// Whether the output is analog (line out, speakers or headphones).
+    pub fn is_analog(&self) -> bool {
+        let analog = [UhdaOutputType::LINE_OUT, UhdaOutputType::SPEAKER, UhdaOutputType::HEADPHONE];
+        analog.contains(&self.info().kind)
+    }
+
+    /// Preference priority for an output, lower values being better, or `None` if the output
+    /// is digital.
+    ///
+    /// The order of preference is plugged in headphones, speakers, then plugged in line outs,
+    /// or any other analog outputs.
+    pub fn preference(&self) -> Option<u8> {
+        let plugged = self.is_present() == Some(true);
+        match self.info().kind {
+            UhdaOutputType::HEADPHONE if plugged => Some(0),
+            UhdaOutputType::SPEAKER => Some(1),
+            UhdaOutputType::LINE_OUT if plugged => Some(2),
+            _ if self.is_analog() => Some(3),
+            _ => None,
+        }
     }
 
     /// Whether something is plugged into the output.

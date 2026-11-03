@@ -46,6 +46,10 @@ pub struct UhdaScatterChunk {
 pub struct UhdaOutputType(c_int);
 
 impl UhdaOutputType {
+    pub const LINE_OUT: Self = Self(0);
+    pub const SPEAKER: Self = Self(1);
+    pub const HEADPHONE: Self = Self(2);
+
     const NAMES: [&str; 7] =
         ["line out", "speaker", "headphone", "CD", "S/PDIF out", "digital out", "unknown"];
 }

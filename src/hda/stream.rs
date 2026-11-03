@@ -27,12 +27,13 @@ pub struct Stream<'a> {
 }
 
 impl<'a> Stream<'a> {
-    /// Sets up a stream to the first output, preferring those plugged in.
+    /// Sets up a stream to the most preferred output. See [`Output::preference`].
     pub(super) fn open(hda: &'a Hda, sample_rate: u32, channels: u32) -> Result<Self, HdaError> {
         let output = hda
             .outputs()
-            .find(|output| output.is_present() == Some(true))
-            .or_else(|| hda.outputs().next())
+            .filter_map(|output| Some((output.preference()?, output)))
+            .min_by_key(|&(preference, _)| preference)
+            .map(|(_, output)| output)
             .ok_or(HdaError::NoOutput)?;
 
         log::debug!("Playing {channels} channels at {sample_rate} Hz to {output}");

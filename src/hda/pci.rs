@@ -101,8 +101,8 @@ pub struct PciDevice {
 }
 
 impl PciDevice {
-    /// Scans every bus on segment 0 looking for a PCI function uHDA can drive.
-    pub fn find_hda() -> Option<Self> {
+    /// Scans every bus on segment 0 looking for PCI functions uHDA can drive.
+    pub fn find_hda() -> impl Iterator<Item = Self> {
         let functions = (0..=u8::MAX).flat_map(|bus| {
             (0..32).flat_map(move |dev| {
                 // Fn0 is guaranteed to exist for a device
@@ -121,7 +121,7 @@ impl PciDevice {
 
         functions
             .filter(|header| header.id(PortAccess).0 != 0xFFFF)
-            .find(|header| {
+            .filter(|header| {
                 let (vendor, device) = header.id(PortAccess);
                 let (_, class, subclass, _) = header.revision_and_class(PortAccess);
 
