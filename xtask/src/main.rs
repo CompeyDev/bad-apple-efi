@@ -3,6 +3,7 @@
 use std::env;
 use std::fmt::Display;
 use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -13,6 +14,10 @@ const QEMU: &str = "qemu-system-x86_64";
 #[cfg(target_os = "macos")]
 const MACOS_FIRMWARE: &str = "../share/qemu/edk2-x86_64-code.fd"; // relative to dir with the binary
 
+const DIST_DIR: &str = "dist";
+const ESP_BOOT_PATH: [&str; 3] = ["EFI", "BOOT", "BOOTX64.EFI"];
+const MIB: u64 = 1024 * 1024;
+
 // TODO(nick): auto-generate these without introducing another crate.
 const HELP_TEXT: &str = "\
 Usage: cargo xtask <task> [cargo args...] [-- qemu args...]
@@ -22,6 +27,8 @@ Available tasks:
     build for the UEFI target
   clean
     clean the workspace of produced artifacts
+  dist
+    build a release as a bootable disk image and a zip of its EFI partition
   qemu-run
     build and run the project using QEMU";
 
@@ -43,6 +50,7 @@ fn main() -> Result<()> {
     match maybe_argument.as_deref() {
         Some("build") => runner.task_build_release(cargo_args),
         Some("clean") => runner.task_clean(cargo_args),
+        Some("dist") => runner.task_dist(cargo_args),
         Some("qemu-run") => runner.task_qemu_run(cargo_args, qemu_args),
         Some(invalid_task) => {
             eprintln!("{HELP_TEXT}");
@@ -128,6 +136,24 @@ impl TaskRunner {
         Ok(())
     }
 
+    pub fn task_dist(&self, cargo_args: &[String]) -> Result<()> {
+        self.task_build_release(cargo_args)?;
+
+        let efi = fs::read(self.artifact_path(BuildProfile::Release))?;
+        let dist = self.root.join(DIST_DIR);
+        fs::create_dir_all(&dist)?;
+
+        let zip = dist.join(format!("{CRATE_NAME}.zip"));
+        write_zip(&zip, &efi)?;
+        self.stdout(format!("wrote {}", zip.display()));
+
+        let image = dist.join(format!("{CRATE_NAME}.img"));
+        write_image(&image, &efi)?;
+        self.stdout(format!("wrote {}", image.display()));
+
+        Ok(())
+    }
+
     pub fn task_clean(&self, cargo_args: &[String]) -> Result<()> {
         fs::remove_dir_all(".qemu")?;
         self.cargo("clean", cargo_args)?;
@@ -194,4 +220,72 @@ impl TaskRunner {
 
         if !ok { Err("QEMU command failed".into()) } else { Ok(()) }
     }
+}
+
+/// Writes a ZIP file containing the EFI System Partition, which can be extracted onto a bootable
+/// FAT32 partition.
+fn write_zip(path: &Path, efi: &[u8]) -> Result<()> {
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
+
+    let mut zip = ZipWriter::new(File::create(path)?);
+    zip.start_file(ESP_BOOT_PATH.join("/"), SimpleFileOptions::default())?;
+    zip.write_all(efi)?;
+    zip.finish()?;
+    Ok(())
+}
+
+/// Writes a disk image containing a GPT partition table along with a FAT32 EFI System Partition
+/// with our boot payload.
+fn write_image(path: &Path, efi: &[u8]) -> Result<()> {
+    use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
+    use fscommon::StreamSlice;
+    use gpt::disk::LogicalBlockSize;
+    use gpt::mbr::ProtectiveMBR;
+    use gpt::{GptConfig, partition_types};
+
+    // FAT32 needs at least 65525 clusters, so leave additional space
+    let partition = (efi.len() as u64 + 4 * MIB).next_multiple_of(MIB).max(64 * MIB);
+    let image_size = partition + 2 * MIB; // the partition table and its backup, both aligned
+
+    let mut file = File::options().read(true).write(true).create(true).truncate(true).open(path)?;
+    file.set_len(image_size)?;
+
+    // Create a protective MBR entry, so tools which don't read GPT see a full partition of an unknown
+    // type, rather than an empty disk
+    let sectors = u32::try_from(image_size / 512 - 1).unwrap_or(u32::MAX);
+    ProtectiveMBR::with_lb_size(sectors).overwrite_lba0(&mut file)?;
+
+    let mut gpt = GptConfig::new()
+        .writable(true)
+        .logical_block_size(LogicalBlockSize::Lb512)
+        .create_from_device(file, None)?;
+
+    let id = gpt.add_partition(
+        "EFI System",
+        partition,
+        partition_types::EFI,
+        0,
+        Some(MIB / 512), /* in sectors */
+    )?;
+
+    let start = gpt.partitions()[&id].bytes_start(LogicalBlockSize::Lb512)?;
+    let file = gpt.write()?;
+
+    // Format the partition
+    let mut volume = StreamSlice::new(file, start, start + partition)?;
+    let options = FormatVolumeOptions::new().fat_type(FatType::Fat32).volume_label(*b"BAD APPLE  ");
+    fatfs::format_volume(&mut volume, options)?;
+
+    // Copy the payload into the files ystem
+    let fs = FileSystem::new(volume, FsOptions::new())?;
+    {
+        let mut dirs = ESP_BOOT_PATH[..2].iter();
+        let dir = dirs.try_fold(fs.root_dir(), |dir, name| dir.create_dir(name))?;
+        dir.create_file(ESP_BOOT_PATH[2])?.write_all(efi)?;
+    }
+
+    // Flush it
+    fs.unmount()?;
+    Ok(())
 }
