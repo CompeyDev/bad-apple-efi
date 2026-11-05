@@ -1,0 +1,28 @@
+Skip stream registers once the controller is reset
+
+The previous patch bounds the stream reset waits, but the cause of the hang it fixed was the order
+of `uhda_destroy`. It resets the controller through `UhdaController::suspend` before destroying it.
+The destructors of the streams run after that, which expect to get a reset bit set, which is never
+the case since the controller has already been reset. 
+
+The streams don't need to the reset, so we set the stream's space to the register base, effectively
+skipping its registers.
+
+--- a/src/controller.cpp
++++ b/src/controller.cpp
+@@ -65,6 +65,15 @@
+ 	if (lock) {
+ 		uhda_kernel_free_spinlock(lock);
+ 	}
++
++	// The controller is in reset by now, which resets its streams too, so the stream destructors
++	// that run after this must not touch their registers
++	for (auto& stream : in_streams) {
++		stream.space = uhda::MemSpace {0};
++	}
++	for (auto& stream : out_streams) {
++		stream.space = uhda::MemSpace {0};
++	}
+ }
+ 
+ static bool hda_irq(void* arg) {
