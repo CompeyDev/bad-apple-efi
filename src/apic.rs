@@ -9,7 +9,7 @@ use x86_64::registers::model_specific::{ApicBase, ApicBaseFlags, Msr};
 use crate::interrupts::{InterruptSemaphore, NakedHandler, IDT};
 use crate::tsc::TSC;
 
-static LAPIC_BASE: spin::Lazy<u32> = spin::Lazy::new(|| {
+static LAPIC_BASE: spin::LazyLock<u32> = spin::LazyLock::new(|| {
     let (frame, flags) = ApicBase::read();
 
     // Our driver needs MMIO, so we look for xAPIC mode

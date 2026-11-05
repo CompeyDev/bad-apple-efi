@@ -7,4 +7,4 @@ edition = "2024"
 fatfs = "0.3.6"
 fscommon = "0.1"
 gpt = "4.1.0"
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

@@ -161,7 +161,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         // which we already exit early, since it relies on the simple text protocol. Since we init
         // our own serial console anyway, that's not necessary and we call `qemu-exit` directly
         use qemu_exit::QEMUExit;
-        qemu_exit::X86::new(0xF4, 3).exit_failure();
+
+        // SAFETY: `cargo xtask qemu-run` attaches the `isa-debug-exit` device at this port
+        unsafe { qemu_exit::X86::new(0xF4, 3) }.exit_failure();
     }
 
     #[cfg(not(feature = "qemu"))]

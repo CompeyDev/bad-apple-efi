@@ -39,14 +39,14 @@ overflow-checks = false
 opt-level = 3
 
 [dependencies]
-uefi = "0.36.1"
-uefi-raw = "0.13"
-thiserror = { version = "2.0.17", default-features = false }
+uefi = "0.41.0"
+uefi-raw = "0.17"
+thiserror = { version = "2.0.21", default-features = false }
 nostd-printf = "0.1.4"
-linked_list_allocator = "0.10.5"
-fast_image_resize = { version = "5.6.0", features = ["no_std"], default-features = false }
-libm = "0.2.15"
-spin = { version = "0.10.0", features = ["lazy", "mutex", "spin_mutex"], default-features = false }
+linked_list_allocator = "0.10.6"
+fast_image_resize = { version = "6.1.0", features = ["no_std"], default-features = false }
+libm = "0.2.16"
+spin = { version = "0.12.3", features = ["lazy", "mutex", "spin_mutex"], default-features = false }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 cfg-if = "1"
 uart_16550 = "0.9"
@@ -57,7 +57,7 @@ owo-colors = "4"
 x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
 pci_types = "0.10"
 ffi-opaque = "2"
-qemu-exit = { version = "3", optional = true }
+qemu-exit = { version = "4", optional = true }
 
 [build-dependencies]
 autotools = "0.2"
