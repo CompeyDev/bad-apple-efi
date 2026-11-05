@@ -1,0 +1,44 @@
+Add a timeout to the wait for a stream reset bit
+
+While testing on real hardware, a hang was discovered due to this unbounded wait on the reset bit
+being set. Particularly, it was due to the ordering of `UhdaStream::destroy` waiting on the stream
+reset bit being set, although it is called from a destructor after `UhdaController::suspend` has 
+already reset the controller, never getting the response.
+
+Another bug: this function also resets the stream slots past the counts in GCAP, which the controller 
+doesn't have and were never set up, so it writes to address 0 through both their unset register base 
+and their null `dma_pos`.
+
+--- a/src/stream.cpp
++++ b/src/stream.cpp
+@@ -91,14 +91,25 @@
+ 		bdl_phys = 0;
+ 	}
+ 
++	// Slots past the stream count the controller reports have no registers
++	if (!space.base) {
++		return;
++	}
++
++	// The reset bit never reads back while the controller itself is in reset, which it is after
++	// `UhdaController::suspend`, so give up after a while rather than waiting forever
+ 	space.store(regs::stream::CTL0, sdctl0::RST(true));
+-	// todo maybe a timeout here,
+-	// it's unlikely that the controller is broken at this point though.
+-	while (!(space.load(regs::stream::CTL0) & sdctl0::RST));
++	for (int i = 0; i < 100 && !(space.load(regs::stream::CTL0) & sdctl0::RST); ++i) {
++		uhda_kernel_delay(10);
++	}
+ 	space.store(regs::stream::CTL0, 0);
+-	while (space.load(regs::stream::CTL0) & sdctl0::RST);
++	for (int i = 0; i < 100 && (space.load(regs::stream::CTL0) & sdctl0::RST); ++i) {
++		uhda_kernel_delay(10);
++	}
+ 
+-	*dma_pos = 0;
++	if (dma_pos) {
++		*dma_pos = 0;
++	}
+ }
+ 
+ void UhdaStream::play(bool play) {
