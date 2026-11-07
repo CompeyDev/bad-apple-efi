@@ -1,0 +1,99 @@
+Rewind paused streams to the start of their buffer
+
+Controllers differ in where a stream continues after its run bit is set again. Ideally, a resumed
+stream replays whatever was left at the start of its buffer, and the period callback counts the
+jump backwards as almost a whole lap of the buffer, filling it with silence. For QEMU, this is not
+the case, and it feels like the audio jumps.
+
+Instead of depending on either, resuming moves what hasn't been played yet to the start of the
+buffer, then resets the stream so its DMA starts there as well, and restores its registers after.
+
+--- a/src/simple.cpp
++++ b/src/simple.cpp
+@@ -1,6 +1,7 @@
+ #include "uhda/simple.h"
+ #include "uhda/kernel_api.h"
+ #include "lock_guard.hpp"
++#include "stream.hpp"
+ 
+ static constexpr uint32_t ALLOWED_SOFTWARE_AHEAD = 0x1000 * 4;
+ 
+@@ -216,9 +217,78 @@
+ 	return status;
+ }
+ 
++static char* uhda_buffer_at(UhdaSimpleStream* stream, uint32_t offset) {
++	return static_cast<char*>(stream->chunks[offset / 0x1000].virt) + offset % 0x1000;
++}
++
++// Some controllers continue where they were stopped, but others (such as QEMU's), restart at the
++// start of the buffer. To make sure the resume is seamless, we move what has not been played yet to
++// the start of the buffer and reset the stream so it starts there.
++static UhdaStatus uhda_rewind_stream(UhdaSimpleStream* stream) {
++	uint32_t buffer_size = stream->params.period_count * stream->params.period_size;
++	uint32_t pos = uhda_stream_get_position(stream->base);
++	uint32_t ahead = stream->get_software_ahead(pos);
++
++	// Copy it out first, since it can wrap around onto where it's moved to
++	if (ahead) {
++		auto* saved = static_cast<char*>(uhda_kernel_malloc(ahead));
++		if (!saved) {
++			return UHDA_STATUS_NO_MEMORY;
++		}
++
++		for (uint32_t i = 0; i < ahead; ++i) {
++			saved[i] = *uhda_buffer_at(stream, (pos + i) % buffer_size);
++		}
++		for (uint32_t i = 0; i < ahead; ++i) {
++			*uhda_buffer_at(stream, i) = saved[i];
++		}
++
++		uhda_kernel_free(saved, ahead);
++	}
++
++	// Resetting the stream clears its registers along with its position, so restore them after
++	auto& space = stream->base->space;
++	auto ctl0 = space.load(regs::stream::CTL0);
++	auto ctl2 = space.load(regs::stream::CTL2);
++	auto cbl = space.load(regs::stream::CBL);
++	auto lvi = space.load(regs::stream::LVI);
++	auto fmt = space.load(regs::stream::FMT);
++	auto bdpl = space.load(regs::stream::BDPL);
++	auto bdpu = space.load(regs::stream::BDPU);
++
++	space.store(regs::stream::CTL0, sdctl0::RST(true));
++	for (int i = 0; i < 100 && !(space.load(regs::stream::CTL0) & sdctl0::RST); ++i) {
++		uhda_kernel_delay(10);
++	}
++	space.store(regs::stream::CTL0, 0);
++	for (int i = 0; i < 100 && (space.load(regs::stream::CTL0) & sdctl0::RST); ++i) {
++		uhda_kernel_delay(10);
++	}
++
++	space.store(regs::stream::BDPL, bdpl);
++	space.store(regs::stream::BDPU, bdpu);
++	space.store(regs::stream::CBL, cbl);
++	space.store(regs::stream::LVI, lvi);
++	space.store(regs::stream::FMT, fmt);
++	space.store(regs::stream::CTL2, ctl2);
++	space.store(regs::stream::CTL0, ctl0);
++	*stream->base->dma_pos = 0;
++
++	stream->current_fill_pos = ahead;
++	stream->prev_irq_pos = 0;
++	return UHDA_STATUS_SUCCESS;
++}
++
+ UhdaStatus uhda_simple_stream_play(UhdaSimpleStream* stream, bool play) {
+ 	auto status = uhda_stream_get_status(stream->base);
+ 
++	if (play && status == UHDA_STREAM_STATUS_PAUSED) {
++		auto rewind_status = uhda_rewind_stream(stream);
++		if (rewind_status != UHDA_STATUS_SUCCESS) {
++			return rewind_status;
++		}
++	}
++
+ 	if (status == UHDA_STREAM_STATUS_PAUSED) {
+ 		auto pos = uhda_stream_get_position(stream->base);
+ 		auto software_ahead = stream->get_software_ahead(pos);
