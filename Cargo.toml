@@ -57,6 +57,7 @@ owo-colors = "4"
 x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
 pci_types = "0.10"
 ffi-opaque = "2"
+pc-keyboard = "0.9"
 qemu-exit = { version = "4", optional = true }
 
 [build-dependencies]
