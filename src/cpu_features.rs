@@ -4,7 +4,7 @@ use core::arch::naked_asm;
 use core::arch::x86_64::*;
 use core::mem::offset_of;
 
-use uefi_raw::protocol::console::SimpleTextOutputProtocol;
+use uefi_raw::protocol::console::{SimpleTextInputProtocol, SimpleTextOutputProtocol};
 use uefi_raw::table::boot::BootServices;
 use uefi_raw::table::system::SystemTable;
 use uefi_raw::Status;
@@ -41,16 +41,13 @@ ucs2_static! {
     TERMINATOR = ""; // prints nothing, only the null terminator
     FOOTER = concat!(
         " feature(s)\r\n (at least Intel Haswell / AMD Excavator CPUs or newer).\r\n\r\n",
-        " This system will hand back to UEFI in 10 seconds...\r\n",
+        " Press any key to hand back to UEFI...\r\n",
     );
 }
 
 // Text attributes and styling
 const BANNER_ATTRIBUTE: usize = 0x0F | 0x4 << 4; // white fg, red bg
 const TEXT_ATTRIBUTE: usize = 0x07; // light grey fg, black bg (default)
-
-/// How long the system stalls for after displaying the message, in microseconds.
-const UNSUPPORTED_STALL: usize = 10_000_000; // 10s
 
 /// Returns which of the features the code is compiled to assume are missing, as a mask of
 /// [`FEATURES`], which is zero when the CPU has all of them.
@@ -95,7 +92,7 @@ pub unsafe extern "efiapi" fn missing_features() -> u32 {
 }
 
 /// Displays a message informing the user which `missing` features their CPU doesn't support,
-/// waits [`UNSUPPORTED_STALL`], then exits with `EFI_UNSUPPORTED`.
+/// waits for a key press, then exits with `EFI_UNSUPPORTED`.
 ///
 /// This is naked for the same reason as [`missing_features`].
 #[unsafe(naked)]
@@ -156,10 +153,16 @@ pub unsafe extern "efiapi" fn unsupported(
         "lea rdx, [rip + {footer}]",          // string = footer
         "call 3f",                            // print(string)
 
-        // TODO(#4): wait for a key press to shut down rather than fixed stall
+        // Wait for a key press, and consume it so the firmware doesn't act on it
+        "mov r12, [rbx + {stdin}]",           // console input protocol
         "mov rax, [rbx + {boot_services}]",   // boot services
-        "mov rcx, {stall_us}",                // microseconds
-        "call [rax + {stall}]",               // stall(microseconds)
+        "mov ecx, 1",                         // number = 1
+        "lea rdx, [r12 + {wait_for_key}]",    // events = key press event
+        "lea r8, [rsp + 32]",                 // index = spare slot
+        "call [rax + {wait_for_event}]",      // wait_for_event(number, events, index)
+        "mov rcx, r12",                       // this = SimpleTextInputProtocol
+        "lea rdx, [rsp + 32]",                // key = spare slot
+        "call [r12 + {read_key_stroke}]",     // read_key_stroke(this, key)
 
         "mov rax, {unsupported}",             // return EFI_UNSUPPORTED
         "add rsp, 40",                        // free shadow space
@@ -182,7 +185,10 @@ pub unsafe extern "efiapi" fn unsupported(
         set_attribute = const offset_of!(SimpleTextOutputProtocol, set_attribute),
         output_string = const offset_of!(SimpleTextOutputProtocol, output_string),
         boot_services = const offset_of!(SystemTable, boot_services),
-        stall = const offset_of!(BootServices, stall),
+        stdin = const offset_of!(SystemTable, stdin),
+        wait_for_key = const offset_of!(SimpleTextInputProtocol, wait_for_key),
+        read_key_stroke = const offset_of!(SimpleTextInputProtocol, read_key_stroke),
+        wait_for_event = const offset_of!(BootServices, wait_for_event),
         banner = const BANNER_ATTRIBUTE,
         text = const TEXT_ATTRIBUTE,
         title = sym TITLE,
@@ -194,7 +200,6 @@ pub unsafe extern "efiapi" fn unsupported(
         features_size = const size_of_val(&FEATURES),
         feature_size = const size_of::<Feature>(),
         name = const offset_of!(Feature, name),
-        stall_us = const UNSUPPORTED_STALL,
         unsupported = const Status::UNSUPPORTED.0,
     )
 }
