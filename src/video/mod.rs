@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use core::ffi::c_int;
+use core::ops::ControlFlow;
 use core::time::Duration;
 
 mod codec;
@@ -22,7 +23,8 @@ pub enum VideoError {
 pub trait FrameSink {
     type Error: From<VideoError>;
 
-    fn present(&mut self, frame: &VideoFrame) -> Result<(), Self::Error>;
+    /// Shows the frame, returning whether playback should go on or stop early.
+    fn present(&mut self, frame: &VideoFrame) -> Result<ControlFlow<()>, Self::Error>;
 }
 
 /// Sample rate of the audio handed to an [`AudioSink`].

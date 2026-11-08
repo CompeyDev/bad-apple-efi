@@ -133,11 +133,10 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
 
     let start = TSC.now();
     player.play(&mut pipeline).expect("Playback failed");
-    pipeline.finish();
 
-    if let Some(time) = TSC.to_duration(TSC.now() - start) {
-        info!("Playback finished in {time:.2?}");
-    }
+    let time = TSC.to_duration(TSC.now() - start).expect("TSC should be calibrated");
+    let how = if pipeline.finish() { "stopped" } else { "finished" };
+    info!("Playback {how} in {time:.2?}");
 
     // Flush any queued logs before we shut down or disable interrupts
     log::logger().flush();

@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use core::mem;
+use core::ops::ControlFlow;
 use core::time::Duration;
 
 use crate::video::codec::{OpusDecoder, Vp9Decoder};
@@ -53,7 +54,7 @@ impl VideoPlayer {
     }
 
     /// Advances playback by a step, handing any decoded frame to `sink`. Returns
-    /// `Ok(false)` once playback has ended.
+    /// `Ok(false)` once playback has ended, or the sink stopped it.
     ///
     /// An error ends playback, with an `Err` return.
     pub fn tick<S: FrameSink + AudioSink>(&mut self, sink: &mut S) -> Result<bool, S::Error> {
@@ -74,14 +75,18 @@ impl VideoPlayer {
                         log::trace!("Packet at {:?}: {} bytes", packet.pts, packet.data.len());
                         decoder.send_packet(&packet)?;
 
-                        if let Some(frame) = decoder.receive_frame() {
-                            sink.present(&frame)?;
-                        } else {
+                        let frame = decoder.receive_frame();
+                        if frame.is_none() {
                             // Hidden VP9 reference frame
                             log::trace!("Packet at {:?} produced no frame", packet.pts);
                         }
 
-                        State::Playing { packets, decoder }
+                        match frame.map(|frame| sink.present(&frame)).transpose()? {
+                            Some(ControlFlow::Break(())) => State::Done,
+                            Some(ControlFlow::Continue(())) | None => {
+                                State::Playing { packets, decoder }
+                            }
+                        }
                     }
 
                     None => State::Done,

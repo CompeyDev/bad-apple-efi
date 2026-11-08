@@ -52,6 +52,13 @@ impl FrameStats {
         }
     }
 
+    /// Records the beginning of a frame, which is used to keep track of the decode time.
+    pub fn begin_frame(&mut self) {
+        if cfg!(debug_assertions) {
+            self.start = Some(TSC.now());
+        }
+    }
+
     /// Runs `f` as the given phase of the current frame, recording its time.
     pub fn time<T>(&mut self, phase: Phase, f: impl FnOnce() -> T) -> T {
         if !cfg!(debug_assertions) {
@@ -60,8 +67,6 @@ impl FrameStats {
         }
 
         let start = TSC.now();
-        self.start.get_or_insert(start);
-
         let result = f();
         self.phases[phase as usize] += TSC.now() - start;
 
