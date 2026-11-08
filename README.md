@@ -43,12 +43,12 @@ Audio is played through the first HD Audio controller with an analog output, suc
 or a headphone jack. Digital outputs like HDMI are not supported.
 
 #### Controls
-| Key                                        | Action            |
-|--------------------------------------------|-------------------|
-| <kbd>Space</kbd>, Play                     | Play or Pause     |
-| <kbd>Up</kbd> <kbd>Down</kbd>, Volume keys | Change the volume |
-| <kbd>M</kbd>, Mute                         | Mute or Unmute    |
-| <kbd>Esc</kbd>, <kbd>Stop</kbd>            | Shut down         |
+| Key                                                            | Action            |
+|----------------------------------------------------------------|-------------------|
+| <kbd>Space</kbd>, <kbd>Play</kbd>                              | Play or Pause     |
+| <kbd>Up</kbd> <kbd>Down</kbd>, <kbd>Vol+</kbd> <kbd>Vol-</kbd> | Change the volume |
+| <kbd>M</kbd>, <kbd>Mute</kbd>                                  | Mute or Unmute    |
+| <kbd>Esc</kbd>, <kbd>Stop</kbd>                                | Shut down         |
 
 Only PS/2 keyboards are supported, which includes most built-in laptop keyboards.
 
