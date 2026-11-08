@@ -38,10 +38,6 @@ cp /path/to/bad_apple.webm bin/
 cargo xtask qemu-run
 ```
 
-#### Audio
-Audio is played through the first HD Audio controller with an analog output, such as speakers
-or a headphone jack. Digital outputs like HDMI are not supported.
-
 #### Controls
 | Key                                                            | Action            |
 |----------------------------------------------------------------|-------------------|
@@ -50,6 +46,9 @@ or a headphone jack. Digital outputs like HDMI are not supported.
 | <kbd>M</kbd>, <kbd>Mute</kbd>                                  | Mute or Unmute    |
 | <kbd>Esc</kbd>, <kbd>Stop</kbd>                                | Shut down         |
 
+#### Audio
+Audio is played through the first HD Audio controller with an analog output, such as speakers
+or a headphone jack. Digital outputs like HDMI are not supported.
 Only PS/2 keyboards are supported, which includes most built-in laptop keyboards.
 
 #### Video
