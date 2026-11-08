@@ -27,6 +27,9 @@ pub struct Stream<'a> {
 }
 
 impl<'a> Stream<'a> {
+    /// The maximum volume streams start at.
+    pub const MAX_VOLUME: u8 = 100;
+
     /// Sets up a stream to the most preferred output. See [`Output::preference`].
     pub(super) fn open(hda: &'a Hda, sample_rate: u32, channels: u32) -> Result<Self, HdaError> {
         let output = hda
@@ -71,11 +74,21 @@ impl<'a> Stream<'a> {
         unsafe {
             uhda_simple_stream_setup(stream.inner.as_ptr(), &params).ok()?;
             uhda_simple_path_setup(stream.path.as_ptr(), stream.inner.as_ptr()).ok()?;
-            uhda_path_set_volume(stream.path.as_ptr(), 100).ok()?; // TODO: control volume
-            uhda_path_mute(stream.path.as_ptr(), false).ok()?;
         }
 
+        stream.set_volume(Self::MAX_VOLUME)?;
+        stream.set_muted(false)?;
         Ok(stream)
+    }
+
+    /// Sets the volume, as a percentage up to [`Self::MAX_VOLUME`] of the output's amplifier.
+    pub fn set_volume(&self, volume: u8) -> Result<(), HdaError> {
+        unsafe { uhda_path_set_volume(self.path.as_ptr(), volume.into()) }.ok()
+    }
+
+    /// Mutes or unmutes the output.
+    pub fn set_muted(&self, muted: bool) -> Result<(), HdaError> {
+        unsafe { uhda_path_mute(self.path.as_ptr(), muted) }.ok()
     }
 
     /// Queues as many of the samples as there is space for, returning how many were queued.
@@ -112,7 +125,18 @@ impl<'a> Stream<'a> {
 
     /// Starts or pauses playback.
     pub fn play(&mut self, play: bool) -> Result<(), HdaError> {
-        unsafe { uhda_simple_stream_play(self.inner.as_ptr(), play) }.ok()
+        unsafe { uhda_simple_stream_play(self.inner.as_ptr(), play) }.ok()?;
+
+        // NOTE:
+        // uHDA restarts paused streams at the start of their buffer, so we count what was played
+        // before pausing, and track the position from zero after resuming. See patch #4 for uHDA.
+        if play {
+            self.position = 0;
+        } else {
+            self.played();
+        }
+
+        Ok(())
     }
 }
 
