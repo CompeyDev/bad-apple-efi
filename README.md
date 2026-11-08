@@ -42,6 +42,16 @@ cargo xtask qemu-run
 Audio is played through the first HD Audio controller with an analog output, such as speakers
 or a headphone jack. Digital outputs like HDMI are not supported.
 
+#### Controls
+| Key                                        | Action            |
+|--------------------------------------------|-------------------|
+| <kbd>Space</kbd>, Play                     | Play or Pause     |
+| <kbd>Up</kbd> <kbd>Down</kbd>, Volume keys | Change the volume |
+| <kbd>M</kbd>, Mute                         | Mute or Unmute    |
+| <kbd>Esc</kbd>, <kbd>Stop</kbd>            | Shut down         |
+
+Only PS/2 keyboards are supported, which includes most built-in laptop keyboards.
+
 #### Video
 You must supply the video as an MP4 or WEBM file in the `bin/` directory. Any codec
 is accepted, `ffmpeg` is used to convert it to a compatible VP9 stream at build time.
