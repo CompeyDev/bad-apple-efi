@@ -16,6 +16,7 @@ use uefi::{boot, runtime, table, Handle, Status};
 use crate::apic::APIC_TIMER;
 use crate::display::Display;
 use crate::hda::Hda;
+use crate::keyboard::KEYBOARD;
 use crate::memory::UefiAllocatorManager;
 use crate::pipeline::{AudioOutput, Pipeline};
 use crate::serial::CONSOLE;
@@ -27,6 +28,7 @@ mod cpu_features;
 mod display;
 mod hda;
 mod interrupts;
+mod keyboard;
 mod libc;
 mod memory;
 mod paging;
@@ -99,10 +101,11 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
         xsave = cpu_features::is_xsave_supported()
     );
 
-    // display + memory
+    // display + memory + keyboard
     let mut display = Display::open().expect("Failed to open display");
     let (region, mut tables) = unsafe { UefiAllocatorManager::init() };
     CONSOLE.enable_interrupts();
+    KEYBOARD.init();
 
     // timers
     APIC_TIMER.calibrate(16);
@@ -130,11 +133,10 @@ fn main_impl(internal_image_handle: Handle, internal_system_table: *const c_void
 
     let start = TSC.now();
     player.play(&mut pipeline).expect("Playback failed");
-    pipeline.finish();
 
-    if let Some(time) = TSC.to_duration(TSC.now() - start) {
-        info!("Playback finished in {time:.2?}");
-    }
+    let time = TSC.to_duration(TSC.now() - start).expect("TSC should be calibrated");
+    let how = if pipeline.finish() { "stopped" } else { "finished" };
+    info!("Playback {how} in {time:.2?}");
 
     // Flush any queued logs before we shut down or disable interrupts
     log::logger().flush();

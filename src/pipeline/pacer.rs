@@ -19,11 +19,29 @@ pub struct FramePacer {
     start: Option<u64>,
     /// The last audio time seen, and the TSC timestamp it was first seen at
     last_audio: Option<(Duration, u64)>,
+    /// The TSC timestamp playback was paused at
+    paused_at: Option<u64>,
 }
 
 impl FramePacer {
     pub fn new(fps: u32) -> Self {
-        Self { period: Duration::from_secs(1) / fps, start: None, last_audio: None }
+        let period = Duration::from_secs(1) / fps;
+        Self { period, start: None, last_audio: None, paused_at: None }
+    }
+
+    /// Pauses or resumes the clock.
+    pub fn set_paused(&mut self, paused: bool) {
+        if paused {
+            self.paused_at.get_or_insert_with(|| TSC.now());
+        } else if let Some(paused_at) = self.paused_at.take() {
+            // The TSC kept counting while paused, so skip the time spent paused
+            if let Some(start) = self.start.as_mut() {
+                *start += TSC.now() - paused_at;
+            }
+
+            // The audio clock stopped while paused, which isn't a stall
+            self.last_audio = None;
+        }
     }
 
     /// The current playback time, derived from either the `audio` clock or the starting

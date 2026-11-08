@@ -12,11 +12,34 @@ pub struct AudioOutput<'a> {
     playing: bool,
     /// Samples queued in total
     queued: u64,
+    volume: u8,
+    muted: bool,
 }
 
 impl<'a> AudioOutput<'a> {
     pub fn new(hda: &'a Hda, stream: Stream<'a>) -> Self {
-        Self { hda, stream, playing: false, queued: 0 }
+        let volume = Stream::MAX_VOLUME;
+        Self { hda, stream, playing: false, queued: 0, volume, muted: false }
+    }
+
+    /// Pauses or resumes playing, once started.
+    pub fn set_paused(&mut self, paused: bool) -> Result<(), HdaError> {
+        self.stream.play(!paused)
+    }
+
+    /// Changes the volume by `step` percent, returning the new volume.
+    pub fn adjust_volume(&mut self, step: i8) -> Result<u8, HdaError> {
+        let volume = self.volume.saturating_add_signed(step).min(Stream::MAX_VOLUME);
+        self.stream.set_volume(volume)?;
+        self.volume = volume;
+        Ok(volume)
+    }
+
+    /// Mutes or unmutes the output, returning whether it is now muted.
+    pub fn toggle_mute(&mut self) -> Result<bool, HdaError> {
+        self.stream.set_muted(!self.muted)?;
+        self.muted ^= true;
+        Ok(self.muted)
     }
 
     /// Starts playing what has been queued so far, unless already playing.
