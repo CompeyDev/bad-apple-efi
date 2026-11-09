@@ -1,0 +1,111 @@
+Add a volume API in absolute decibels
+
+The only volume API was `uhda_path_set_volume`, which sets a percentage linearly using the steps
+of the audio output's amp. While each step is fixed, the range varies for different codecs. If
+a consumer wants to apply their own volume curve (which is our use case), there is no way to do
+that without being able to set the volume in raw decibels. On top of that, we need access to the
+codec's range as well to calculate the dB value in the curve.
+
+This patch adds:
+
+* `uhda_path_get_volume_range` to read the range of the output's amp as a `UhdaVolumeRange`
+* `uhda_path_set_volume_db` to set the volume in decibels, with precision within hundredths of
+  a decibel
+
+--- a/include/uhda/types.h
++++ b/include/uhda/types.h
+@@ -104,6 +104,12 @@ typedef struct UhdaPathInfo {
+ 	uint32_t supported_formats_count;
+ } UhdaPathInfo;
+ 
++typedef struct UhdaVolumeRange {
++	int32_t min_cdb;
++	int32_t max_cdb;
++	uint32_t step_cdb;
++} UhdaVolumeRange;
++
+ /*
+  * Stream parameters
+  *
+diff --git a/include/uhda/uhda.h b/include/uhda/uhda.h
+index 1968417..c6b66a2 100644
+--- a/include/uhda/uhda.h
++++ b/include/uhda/uhda.h
+@@ -181,6 +181,18 @@ UhdaStatus uhda_path_shutdown(UhdaPath* path);
+  */
+ UhdaStatus uhda_path_set_volume(UhdaPath* path, int volume);
+ 
++/*
++ * Gets the range the volume of the path can be set in.
++ */
++UhdaStatus uhda_path_get_volume_range(const UhdaPath* path, UhdaVolumeRange* res);
++
++/*
++ * Sets the volume on the path to `volume` in hundredths of a decibel.
++ *
++ * Note: the volume is rounded to the nearest step and clamped to the path's volume range.
++ */
++UhdaStatus uhda_path_set_volume_db(UhdaPath* path, int32_t volume);
++
+ /*
+  * Mutes/unmutes the path.
+  */
+diff --git a/src/uhda.cpp b/src/uhda.cpp
+index 4a332ac..37fe6b6 100644
+--- a/src/uhda.cpp
++++ b/src/uhda.cpp
+@@ -500,6 +500,54 @@ UhdaStatus uhda_path_set_volume(UhdaPath* path, int volume) {
+ 	return path->codec->set_amp_gain_mute(output->nid, amp_data);
+ }
+ 
++static UhdaVolumeRange get_volume_range(uint32_t amp_caps) {
++	int32_t offset = amp_caps & 0x7F;
++	int32_t num_steps = amp_caps >> 8 & 0x7F;
++	// step size is in 0.25 dB units, minus one
++	int32_t step = ((amp_caps >> 16 & 0x7F) + 1) * 25;
++
++	return {
++		.min_cdb = -offset * step,
++		.max_cdb = (num_steps - offset) * step,
++		.step_cdb = static_cast<uint32_t>(step)
++	};
++}
++
++UhdaStatus uhda_path_get_volume_range(const UhdaPath* path, UhdaVolumeRange* res) {
++	auto output = path->widgets.back();
++	if (output->type != widget_type::AUDIO_OUT) {
++		return UHDA_STATUS_UNSUPPORTED;
++	}
++
++	*res = get_volume_range(output->out_amp_caps);
++	return UHDA_STATUS_SUCCESS;
++}
++
++UhdaStatus uhda_path_set_volume_db(UhdaPath* path, int32_t volume) {
++	auto output = path->widgets.back();
++	if (output->type != widget_type::AUDIO_OUT) {
++		return UHDA_STATUS_UNSUPPORTED;
++	}
++
++	auto range = get_volume_range(output->out_amp_caps);
++	if (volume < range.min_cdb) {
++		volume = range.min_cdb;
++	}
++	else if (volume > range.max_cdb) {
++		volume = range.max_cdb;
++	}
++
++	// round to the nearest step
++	auto step = static_cast<int32_t>(range.step_cdb);
++	uint8_t value = (volume - range.min_cdb + step / 2) / step;
++
++	path->gain = value;
++
++	// set output amp, set left amp, set right amp and gain
++	uint16_t amp_data = 1 << 15 | 1 << 13 | 1 << 12 | value;
++	return path->codec->set_amp_gain_mute(output->nid, amp_data);
++}
++
+ UhdaStatus uhda_path_mute(UhdaPath* path, bool mute) {
+ 	auto pin = path->widgets.front();
+ 

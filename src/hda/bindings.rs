@@ -115,6 +115,15 @@ impl UhdaFormat {
     pub const PCM16: Self = Self(1);
 }
 
+/// `UhdaVolumeRange`, in hundredths of a decibel.
+#[repr(C)]
+#[derive(Default)]
+pub struct UhdaVolumeRange {
+    pub min_cdb: i32,
+    pub max_cdb: i32,
+    pub step_cdb: u32,
+}
+
 /// `UhdaSimpleStreamParams`
 #[repr(C)]
 pub struct UhdaSimpleStreamParams {
@@ -171,6 +180,11 @@ extern "C" {
 
     pub fn uhda_path_shutdown(path: *mut UhdaPath) -> UhdaStatus;
     pub fn uhda_path_set_volume(path: *mut UhdaPath, volume: c_int) -> UhdaStatus;
+    pub fn uhda_path_get_volume_range(
+        path: *const UhdaPath,
+        res: *mut UhdaVolumeRange,
+    ) -> UhdaStatus;
+    pub fn uhda_path_set_volume_db(path: *mut UhdaPath, volume: i32) -> UhdaStatus;
     pub fn uhda_path_mute(path: *mut UhdaPath, mute: bool) -> UhdaStatus;
 
     pub fn uhda_stream_shutdown(stream: *mut UhdaStream) -> UhdaStatus;

@@ -1,4 +1,5 @@
 use core::marker::PhantomData;
+use core::ops::RangeInclusive;
 use core::ptr::{self, NonNull};
 
 use zerocopy::IntoBytes;
@@ -84,6 +85,18 @@ impl<'a> Stream<'a> {
     /// Sets the volume, as a percentage up to [`Self::MAX_VOLUME`] of the output's amplifier.
     pub fn set_volume(&self, volume: u8) -> Result<(), HdaError> {
         unsafe { uhda_path_set_volume(self.path.as_ptr(), volume.into()) }.ok()
+    }
+
+    /// The range of volumes the output's amplifier can be set to, in hundredths of a decibel.
+    pub fn volume_range(&self) -> Result<RangeInclusive<i32>, HdaError> {
+        let mut range = UhdaVolumeRange::default();
+        unsafe { uhda_path_get_volume_range(self.path.as_ptr(), &mut range) }.ok()?;
+        Ok(range.min_cdb..=range.max_cdb)
+    }
+
+    /// Sets the volume in hundredths of a decibel, rounded and clamped to [`Self::volume_range`].
+    pub fn set_volume_db(&self, volume: i32) -> Result<(), HdaError> {
+        unsafe { uhda_path_set_volume_db(self.path.as_ptr(), volume) }.ok()
     }
 
     /// Mutes or unmutes the output.
