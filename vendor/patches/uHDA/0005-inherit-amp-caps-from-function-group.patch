@@ -1,0 +1,56 @@
+Inherit amp capabilities from the function group
+
+During initialization, the amp capabilities of each widget are read from the widget itself, but a
+widget only reports this when the Amp Parameter Override bit is set in its audio capabilities. When
+this is not the case, the audio function group's apply, with the widget's being read as zero for some
+hardware. This makes `uhda_path_set_volume` think the lowest step is 0 dB, so, setting the volume does
+nothing.
+
+The fix is to read the function group's capabilities directly and use them for the widgets that do not
+have the override bit set.
+
+--- a/src/codec.cpp
++++ b/src/codec.cpp
+@@ -33,6 +33,19 @@ UhdaStatus UhdaCodec::init() {
+ 			return status;
+ 		}
+ 
++		// widgets without their own amp parameters use the function group's
++		uint32_t default_in_amp_caps;
++		status = get_parameter(func_group_i, param::IN_AMP_CAPS, default_in_amp_caps);
++		if (status != UHDA_STATUS_SUCCESS) {
++			return status;
++		}
++
++		uint32_t default_out_amp_caps;
++		status = get_parameter(func_group_i, param::OUT_AMP_CAPS, default_out_amp_caps);
++		if (status != UHDA_STATUS_SUCCESS) {
++			return status;
++		}
++
+ 		uint32_t num_widgets_resp;
+ 		status = get_parameter(func_group_i, param::NODE_COUNT, num_widgets_resp);
+ 		if (status != UHDA_STATUS_SUCCESS) {
+@@ -66,6 +79,22 @@ UhdaStatus UhdaCodec::init() {
+ 				return status;
+ 			}
+ 
++			// bit 3 == amp param override
++			if (!(audio_caps & 1 << 3)) {
++				in_amp_caps = default_in_amp_caps;
++				out_amp_caps = default_out_amp_caps;
++			}
++
++			// bit 1 == in amp present
++			if (!(audio_caps & 1 << 1)) {
++				in_amp_caps = 0;
++			}
++
++			// bit 2 == out amp present
++			if (!(audio_caps & 1 << 2)) {
++				out_amp_caps = 0;
++			}
++
+ 			status = get_parameter(widget_i, param::PIN_CAPS, pin_caps);
+ 			if (status != UHDA_STATUS_SUCCESS) {
+ 				return status;
