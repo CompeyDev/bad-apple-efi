@@ -179,7 +179,6 @@ extern "C" {
     ) -> UhdaStatus;
 
     pub fn uhda_path_shutdown(path: *mut UhdaPath) -> UhdaStatus;
-    pub fn uhda_path_set_volume(path: *mut UhdaPath, volume: c_int) -> UhdaStatus;
     pub fn uhda_path_get_volume_range(
         path: *const UhdaPath,
         res: *mut UhdaVolumeRange,

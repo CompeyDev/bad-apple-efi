@@ -28,9 +28,6 @@ pub struct Stream<'a> {
 }
 
 impl<'a> Stream<'a> {
-    /// The maximum volume streams start at.
-    pub const MAX_VOLUME: u8 = 100;
-
     /// Sets up a stream to the most preferred output. See [`Output::preference`].
     pub(super) fn open(hda: &'a Hda, sample_rate: u32, channels: u32) -> Result<Self, HdaError> {
         let output = hda
@@ -77,14 +74,9 @@ impl<'a> Stream<'a> {
             uhda_simple_path_setup(stream.path.as_ptr(), stream.inner.as_ptr()).ok()?;
         }
 
-        stream.set_volume(Self::MAX_VOLUME)?;
+        stream.set_volume_db(0)?; // 0 dB from base (default volume)
         stream.set_muted(false)?;
         Ok(stream)
-    }
-
-    /// Sets the volume, as a percentage up to [`Self::MAX_VOLUME`] of the output's amplifier.
-    pub fn set_volume(&self, volume: u8) -> Result<(), HdaError> {
-        unsafe { uhda_path_set_volume(self.path.as_ptr(), volume.into()) }.ok()
     }
 
     /// The range of volumes the output's amplifier can be set to, in hundredths of a decibel.
