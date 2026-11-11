@@ -61,7 +61,8 @@ pc-keyboard = "0.9"
 qemu-exit = { version = "4", optional = true }
 
 [build-dependencies]
+anyhow = "1"
 autotools = "0.2"
 cc = "1"
-diffy = "0.5"
+flickzeug = "0.6"
 xshell = "0.2"

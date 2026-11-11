@@ -71,6 +71,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -95,12 +101,13 @@ dependencies = [
 name = "bad-apple"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "autotools",
  "cc",
  "cfg-if",
- "diffy",
  "fast_image_resize",
  "ffi-opaque",
+ "flickzeug",
  "heapless",
  "itertools 0.15.0",
  "libm",
@@ -463,15 +470,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diffy"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e3dc2f773b6aaa63b1a7684b8589f670a8a0146a510b74d23a401c882364b49"
-dependencies = [
- "hashbrown",
-]
-
-[[package]]
 name = "digest"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -613,10 +611,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "foldhash"
-version = "0.2.0"
+name = "flickzeug"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+checksum = "193f9e0d733b59a9db196a6443d654c0ced3986faf000da429538998f2eecb7a"
+dependencies = [
+ "memchr",
+ "nu-ansi-term",
+ "strsim",
+ "thiserror",
+]
 
 [[package]]
 name = "fscommon"
@@ -697,9 +701,6 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-dependencies = [
- "foldhash",
-]
 
 [[package]]
 name = "heapless"
